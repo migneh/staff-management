@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # v14/v15 both require Node 22.12.0+
+          node-version: '22'
+
+      # better-sqlite3 ships prebuilt binaries for this platform/ABI, so `npm ci`
+      # installs the REAL driver and tests/sqlite-compat.js never falls back to
+      # the node:sqlite shim. That matters: the shim swallows PRAGMA errors and
+      # has no nested-transaction or busy-retry semantics, so a green run against
+      # it would not prove anything about the engine that ships.
+      - name: تثبيت الحزم
+        run: npm ci --no-audit --no-fund
+
+      # Fail loudly if the native driver did not actually load — otherwise the
+      # suite silently degrades to the shim and we lose the WAL/FK coverage.
+      - name: التأكد من محرك SQLite الأصلي
+        run: node -e "const D=require('better-sqlite3');const d=new D(':memory:');d.exec('CREATE TABLE t(a INTEGER)');d.prepare('INSERT INTO t VALUES (?)').run(1);d.close();console.log('better-sqlite3 native OK')"
+
+      - name: فحص الصياغة لكل ملف
+        run: |
+          fail=0
+          for f in $(find src scripts tests -name '*.js'); do
+            node --check "$f" || { echo "❌ خطأ صياغة في $f"; fail=1; }
+          done
+          exit $fail
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: الاختبارات
+        run: npm test
+
+      - name: التحقق من سجل الأوامر والمكوّنات
+        run: node scripts/validate-registry.js
+
+      # Guards the two regressions that actually happened: a command-registry
+      # entry with no handler (boot crash) and a README table that drifts from
+      # the real registry. Both are silent otherwise.
+      - name: بوابة الإقلاع: لا معرّف بلا معالج
+        run: node -e "const {validateRegistry}=require('./src/commands');const p=validateRegistry({throwOnError:false});if(p.length){console.error('❌ سجل المكوّنات غير سليم:\n- '+p.join('\n- '));process.exit(1)}console.log('✅ سجل المكوّنات سليم')"

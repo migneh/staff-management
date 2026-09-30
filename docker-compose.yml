@@ -1,0 +1,19 @@
+services:
+  staff-manager:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      DB_PATH: /app/data/staff.db
+      BACKUP_DIR: /app/backups
+      HEALTH_HOST: 0.0.0.0
+      HEALTH_PORT: 8787
+    volumes:
+      - ./data:/app/data
+      - ./backups:/app/backups
+      - ./config.json:/app/config.json:ro
+    ports:
+      - "127.0.0.1:8787:8787"
+    stop_grace_period: 5s

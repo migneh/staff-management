@@ -1,0 +1,37 @@
+{
+  "name": "staff-manager-bot",
+  "version": "1.0.0",
+  "description": "Staff Manager Bot - بوت إدارة الفريق",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "lint": "eslint src scripts tests",
+    "validate": "node scripts/validate-registry.js",
+    "migrate:tz": "node scripts/migrate-activity-timezone.js",
+    "start": "node src/index.js",
+    "deploy": "node src/deploy-commands.js",
+    "check": "npm run lint && npm test && npm run validate && npm run docs:commands -- --check",
+    "docs:commands": "node scripts/gen-readme-commands.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/migneh/staff-managemen.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/migneh/staff-managemen/issues"
+  },
+  "homepage": "https://github.com/migneh/staff-managemen#readme",
+  "type": "commonjs",
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "discord.js": "^14.27.0",
+    "dotenv": "^17.4.2",
+    "node-cron": "^4.6.0"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.5"
+  }
+}

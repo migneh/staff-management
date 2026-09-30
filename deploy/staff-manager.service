@@ -1,0 +1,23 @@
+[Unit]
+Description=Staff Manager Discord Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=staffbot
+Group=staffbot
+WorkingDirectory=/opt/staff-managemen
+EnvironmentFile=/opt/staff-managemen/.env
+Environment=NODE_ENV=production
+Environment=DB_PATH=/var/lib/staff-manager/staff.db
+Environment=BACKUP_DIR=/var/lib/staff-manager/backups
+Environment=HEALTH_HOST=127.0.0.1
+Environment=HEALTH_PORT=8787
+ExecStart=/usr/bin/node /opt/staff-managemen/src/index.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target

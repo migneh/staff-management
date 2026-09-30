@@ -1,0 +1,44 @@
+# ملاحظة: هذا الملف جاهز للتشغيل كسير عمل GitHub Actions.
+# لم يُوضع في .github/workflows/ لأن رمز النشر (GitHub App) لا يملك صلاحية
+# `workflows`، فيُرفض الدفع. لتفعيله: انسخ الملف إلى
+# .github/workflows/ci.yml  من واجهة GitHub أو بعد منح الصلاحية.
+# نفس الخطوات متاحة محلياً بأمر واحد: npm run check
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # better-sqlite3 يحتاج بناءً أصلياً؛ نستخدم المفسّر الافتراضي للاختبارات
+      # (tests/sqlite-compat) فلا حاجة لبناء الوحدات الأصلية.
+      - name: تثبيت الحزم
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: فحص الصياغة لكل ملف
+        run: |
+          fail=0
+          for f in $(find src scripts tests -name '*.js'); do
+            node --check "$f" || { echo "❌ خطأ صياغة في $f"; fail=1; }
+          done
+          exit $fail
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: الاختبارات
+        run: npm test
+
+      - name: التحقق من سجل الأوامر والمكوّنات
+        run: node scripts/validate-registry.js
