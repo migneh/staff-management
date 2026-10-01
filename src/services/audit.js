@@ -2,20 +2,23 @@
 const { getDb } = require('../database');
 const { nowIso } = require('../utils');
 
-function record({ action, actorId = null, targetId = null, details = null, channelId = null, level = 'info' }) {
+// `level` كان معاملاً في التوقيع لا يُخزَّن إطلاقاً، و`list` كان يفلتر على عمود
+// `level` غير الموجود في audit_logs — أي أن أي استدعاء كان سينهار بـ
+// "no such column". لا مستدعٍ واحد في src/ كان يمرّره. أُزيل بدل إضافة عمود
+// لا يكتبه أحد.
+function record({ action, actorId = null, targetId = null, details = null, channelId = null }) {
   const payload = details == null ? null : typeof details === 'string' ? details : JSON.stringify(details);
   const result = getDb().prepare(`INSERT INTO audit_logs (action, actor_id, target_id, details, channel_id, created_at)
     VALUES (?, ?, ?, ?, ?, ?)`).run(action, actorId, targetId, payload, channelId, nowIso());
   return result.lastInsertRowid;
 }
 
-function list({ actorId, targetId, limit = 15, action = null, level = null, since = null } = {}) {
+function list({ actorId, targetId, limit = 15, action = null, since = null } = {}) {
   let sql = 'SELECT * FROM audit_logs WHERE 1=1';
   const params = [];
   if (actorId) { sql += ' AND actor_id = ?'; params.push(actorId); }
   if (targetId) { sql += ' AND target_id = ?'; params.push(targetId); }
   if (action) { sql += ' AND action = ?'; params.push(action); }
-  if (level) { sql += ' AND level = ?'; params.push(level); }
   if (since) { sql += ' AND created_at >= ?'; params.push(since); }
   sql += ' ORDER BY id DESC LIMIT ?';
   params.push(Math.min(Math.max(Number(limit) || 15, 1), 100));

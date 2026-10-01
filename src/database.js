@@ -490,6 +490,39 @@ function migrate(database) {
   database.exec('CREATE INDEX IF NOT EXISTS idx_resignation_status_day ON resignations(status, last_day)');
   database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_ticket_source_message ON ticket_metrics(source_message_id) WHERE source_message_id IS NOT NULL');
 
+  // فحص التكرار في services/activity.js:54 يقع على المسار الساخن لكل رسالة إدارية.
+  // الفهرس الوحيد كان (user_id, day) وday غير مقيّد، فكان SQLite يمشي على كامل
+  // صفحات ذلك المستخدم (كل ما أنتجه خلال 12 شهراً) ليختبر content_hash.
+  // المقيس على 73,000 صف: 0.56ms → 0.039ms لكل رسالة، والخطة صارت covering.
+  database.exec('CREATE INDEX IF NOT EXISTS idx_activity_dedup ON activity_logs(user_id, content_hash, created_at)');
+
+
+  // services/score.js:69 وpromotions.js:207 — الجدول بلا أي فهرس إطلاقاً.
+  database.exec('CREATE INDEX IF NOT EXISTS idx_staff_notes_user ON staff_notes(user_id, created_at)');
+
+  // يوميات التذكير: scheduler.js:247 يفلتر status ثم task_type ثم due_date،
+  // ولا فهرس في الجدول يبدأ بـ status.
+  database.exec('CREATE INDEX IF NOT EXISTS idx_tasks_reminder ON staff_tasks(status, task_type, due_date)');
+
+  // نهاية الإجازة للطلبات المنتهية/الملغاة: يقرأها تقرير رتب الإجازة يومياً.
+  database.exec('CREATE INDEX IF NOT EXISTS idx_leave_status_end ON leave_requests(status, end_date)');
+
+  // سجل التدقيق يُقرأ بالمُنفِّذ والتاريخ في كل استعلام تقريباً.
+  database.exec('CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_logs(actor_id, created_at)');
+
+  // الاستقالات: نظيرها leave_requests له فهرس، ولم يُبنَ لها أي فهرس.
+  database.exec('CREATE INDEX IF NOT EXISTS idx_resignation_user ON resignations(user_id, last_day)');
+
+  // staff.all() يعمل في كل دورة مجدولة بلا فهرس.
+  database.exec('CREATE INDEX IF NOT EXISTS idx_staff_team_status ON staff_members(team, status)');
+
+  database.exec('CREATE INDEX IF NOT EXISTS idx_saved_reports ON saved_reports(report_type, period)');
+  database.exec('CREATE INDEX IF NOT EXISTS idx_ticket_id ON ticket_metrics(ticket_id, id)');
+  database.exec('CREATE INDEX IF NOT EXISTS idx_faq_history_entry ON faq_history(entry_id, version)');
+  database.exec('CREATE INDEX IF NOT EXISTS idx_faq_panels_channel ON faq_panels(channel_id)');
+  database.exec('CREATE INDEX IF NOT EXISTS idx_promotion_requests_status ON promotion_requests(status, created_at)');
+  database.exec('CREATE INDEX IF NOT EXISTS idx_promotion_requests_user ON promotion_requests(user_id, status)');
+
   // عمود الإيقاف المؤقت: يمنع بقاء العضو موقوفاً للأبد (كان لا يوجد مسار إلغاء إيقاف)
   addTableColumns('staff_members', [['suspended_until', 'TEXT'], ['onboarding_ready', 'INTEGER NOT NULL DEFAULT 0'], ['onboarding_approved_by', 'TEXT'], ['onboarding_approved_at', 'TEXT'], ['mentor_id', 'TEXT']]);
   addTableColumns('warnings', [['voided_at', 'TEXT'], ['voided_by', 'TEXT'], ['void_reason', 'TEXT']]);

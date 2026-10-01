@@ -95,9 +95,20 @@ module.exports = {
       if (!task) return replyEphemeral(i, '❌ المهمة غير موجودة أو ليست لك أو أُنجزت مسبقاً.', COLORS.danger);
       await i.update({ content: `✅ تم إتمام المهمة **#${id}** - ${task.title}`, components: [] });
     },
+    // الإلغاء: القاعدة في tasks.cancel لا في الواجهة. نقرأ الصف أولاً ومرّر
+    // صاحبه — قبل الإصلاح كان `cancel(Number(id), i.user.id)` بلا owner إطلاقاً،
+    // فالنطاق المضاف في الخدمة كان خاملاً. نُبقي على إشراف الإدارة على مهام
+    // غير التأهيل، ونقول للعضو ما إذا كان الرفض بسبب حماية مهمة التأهيل.
     'mission:cancel': async (i, [id]) => {
-      const cancelled = missions.cancel(Number(id), i.user.id);
-      if (!cancelled) return replyEphemeral(i, '❌ المهمة غير موجودة أو ليست لك أو ليست معلقة.', COLORS.danger);
+      const task = missions.get(Number(id));
+      if (!task) return replyEphemeral(i, '❌ المهمة غير موجودة.', COLORS.danger);
+      const res = missions.cancel(task.id, i.user.id, task.user_id);
+      if (!res.ok) {
+        const message = res.reason === 'onboarding_protected'
+          ? '❌ مهام التأهيل لا يلغيها إلا صاحبها — ألغِها بنفسك أو اتركها للمرشد.'
+          : '❌ المهمة غير موجودة أو ليست معلقة.';
+        return replyEphemeral(i, message, COLORS.danger);
+      }
       await i.update({ content: `❌ تم إلغاء المهمة **#${id}**`, components: [] });
     }
   }

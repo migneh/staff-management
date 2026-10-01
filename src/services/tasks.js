@@ -324,24 +324,42 @@ function complete(id, userId) {
 }
 
 /**
- * إلغاء مهمة مع تسجيل مَن ألغاها ومتى — كان المعامل actorId مُهمَلاً سابقاً.
+ * إلغاء مهمة مع تسجيل مَن ألغاها ومتى.
  *
- * ⚠️ الفحص القديم كان `WHERE id = ? AND status = 'pending'` بلا `user_id` إطلاقاً،
- * فأي إداري يمرّ على mission:cancel (المستوى MANAGEMENT) كان يلغي مهمة أي عضو —
- * بما فيها مهام التأهيل التي يحكم `approveOnboarding` على بقائها. النموذج هنا
- * هو `complete()` أعلاه: `user_id` في WHERE لا مقارنة بعد الاستعلام.
+ * الفحص كان سابقاً `WHERE id = ? AND status = 'pending'` بلا `user_id` إطلاقاً،
+ * فأي إداري يمرّ على mission:cancel (المستوى MANAGEMENT) كان يلغي مهمة أي عضو.
+ * إضافة `ownerId` (نموذج `complete()` أعلاه) أضفت النطاق لكن الاستدعاء الوحيد
+ * لم يمرّره، فبقي النطاق خاملاً — وهو أسوأ من انعدامه لأنه يوهم أنه مفعّل.
  *
- * `ownerId` اختياري، لكن تمريره هو ما يُقيّد الإلغاء بصاحب المهمة. السلوك
- * الافتراضي (بلا ownerId) كما كان — والاستدعاء الوحيد في السجل هو
- * src/commands/missions.js:99، وهو ملف لا تملكه هذه المهمة: مرّر له صاحب
- * المهمة إن أردت القصر على صاحبها.
+ * القاعدة الآن مقروءة في مكان واحد — هنا — لا في الواجهة:
+ *  • مهمة **تأهيل** لا يلغيها إلا صاحبها. عدّاد `approveOnboarding` يعدّ
+ *    الصفوف المعلّقة فقط، فإلغاء آخر مهمة تأهيل يُخرجها من العدّاد فيفتح
+ *    /approve-onboarding دون اكتمال التأهيل. هذا هو الاستثناء الوحيد.
+ *  • أي مهمة أخرى (mission / general / recurring) يبقى للإدارة أن تلغيها
+ *    لعضو آخر: mission:cancel مُسجَّل بمستوى MANAGEMENT بلا owner:'self'
+ *    (src/commands/index.js:50)، والإشراف المقصود لا يجوز كسره.
+ *
+ * @param {number} id
+ * @param {string|null} actorId المنفّذ (يُسجَّل في cancelled_by)
+ * @param {string|null} ownerId صاحب المهمة كما رآه المستدعي — شرط كتابة إضافي
+ * @returns {{ok:boolean, reason?:string, task?:object}}
  */
 function cancel(id, actorId = null, ownerId = null) {
-  const scoped = ownerId !== null && ownerId !== undefined;
+  const task = get(id);
+  if (!task) return { ok: false, reason: 'not_found' };
+  if (task.status !== 'pending') return { ok: false, reason: 'not_pending' };
+  // النطاق الذي طلبه المستدعي: إن اختلف عمّن قرأ صفه فلا نكتب.
+  if (ownerId !== null && ownerId !== undefined && String(task.user_id) !== String(ownerId)) {
+    return { ok: false, reason: 'not_owner' };
+  }
+  if (task.task_type === 'onboarding' && String(task.user_id) !== String(actorId)) {
+    return { ok: false, reason: 'onboarding_protected' };
+  }
   const res = getDb().prepare(`UPDATE staff_tasks SET status = 'cancelled', cancelled_by = ?, cancelled_at = ?, updated_at = ?
-    WHERE id = ? AND status = 'pending' ${scoped ? 'AND user_id = ?' : ''}`)
-    .run(actorId, nowIso(), nowIso(), Number(id), ...(scoped ? [ownerId] : []));
-  return res.changes > 0;
+    WHERE id = ? AND status = 'pending'`)
+    .run(actorId, nowIso(), nowIso(), Number(id));
+  if (!res.changes) return { ok: false, reason: 'not_pending' };
+  return { ok: true, task: get(task.id) };
 }
 
 module.exports = { 

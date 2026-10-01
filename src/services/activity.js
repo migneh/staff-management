@@ -42,9 +42,31 @@ function hash(content) {
 }
 
 /**
- * تسجيل رسالة كنشاط. يعيد {counted:boolean, reason?:string, type:string}
+ * هل تتبّع النشاط مفعّلاً؟ مفتاح `activityTracking` في services/settings.
+ * كان يُعرض في /config ويُكتب بلا قارئ — مفتاح يَعِد المشغّل بإيقاف مهمة
+ * لا تتوقف. الآن هو البوابة الوحيدة لكتابة activity_logs.
+ */
+function isTrackingEnabled() {
+  return settings.featureToggle('activityTracking') !== false;
+}
+
+/**
+ * تسجيل رسالة كنشاط. يعيد {counted:boolean, reason?:string, type:string|null}
+ *
+ * البوابة على الكتابة لا على القراءة: إيقاف التتبّع يوقف صفوفاً جديدة فقط،
+ * وما سُجّل سابقاً يبقى يُقرأ. ما يتأثر بالإيقاف — ولا بدّ من ذكره صراحة:
+ *   • Score: عوامل «الرسائل» و«التواصل»/«النشاط»/«الالتزام»
+ *     (src/services/score.js:51) تقرأ activity_logs، فالنوافذ الجديدة تُحسب
+ *     على نشاط ناقص؛ والنوافذ المنتهية قبل الإيقاف تبقى صحيحة.
+ *   • بوابات الترقية: `minMessages` و`activeDays` (src/services/promotions.js:148,177).
+ *   • كشف الغياب بعد الإجازة (src/scheduler.js:154) و«سلسلة الأسابيع النشطة»
+ *     في التقارير (src/services/reports.js:42).
+ *   • /activity و/my-status (stats) وتقارير retention وحجم القاعدة في /system-status.
+ * أي إيقاف مطوّل يعني أرقاماً ناقصة في كل ما سبق — لهذا يُعرض التنبيه في
+ * /my-record على العضو نفسه لا في سجل الخادم وحده.
  */
 function record(userId, channel, content) {
+  if (!isTrackingEnabled()) return { counted: false, reason: 'tracking_disabled', type: null };
   const type = classifyChannel(channel);
   const reason = spamReason(content);
   if (reason) return { counted: false, reason, type };
@@ -84,4 +106,4 @@ function activeDaysInMonth(userId, yyyymm) {
   return d;
 }
 
-module.exports = { classifyChannel, spamReason, record, stats, activeDaysInMonth };
+module.exports = { classifyChannel, spamReason, record, stats, activeDaysInMonth, isTrackingEnabled };

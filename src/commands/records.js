@@ -4,6 +4,7 @@ const { SlashCommandBuilder } = require('discord.js');
 const { LEVELS, NOTE_TYPES, WARNING_TYPES, TEAMS, STATUS } = require('../constants');
 const { getDb } = require('../database');
 const staffService = require('../services/staff');
+const activity = require('../services/activity');
 const audit = require('../services/audit');
 const { embed, COLORS, replyEphemeral, dm, log, discordTs, sendToChannel, arDigits } = require('../utils');
 const staffSync = require('../services/staffSync');
@@ -31,6 +32,14 @@ function recordEmbed(userId, { includeSecret }) {
         const who = r.actor_id ? ` • <@${r.actor_id}>` : '';
         return `${RANK_CHANGE[r.change_type] || r.change_type}: ${from}**${to || '—'}** • ${discordTs(r.created_at, 'd')}${who}`;
       }).join('\n').slice(0, 1024),
+    });
+  }
+  // إن كان تتبّع النشاط موقوفاً فأي رقم مشتق من نشاطك ناقص — نقوله للعضو
+  // نفسه هنا، لأن سلسلة causal تبدأ من مفتاح في /config لا يراه العضو.
+  if (!activity.isTrackingEnabled()) {
+    e.addFields({
+      name: '⚠️ تتبّع النشاط متوقف',
+      value: 'نشاطك (رسائلك وأيام حضورك) لا يُسجَّل حالياً، فالدرجات وشروط الترقية القائمة على النشاط تُحسب على بيانات ناقصة. راجع الإدارة لتفعيله.',
     });
   }
   e.addFields({
