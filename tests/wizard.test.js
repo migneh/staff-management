@@ -12,6 +12,7 @@ const wizard = require('../src/commands/wizard');
 const { commands, resolveComponent } = require('../src/commands');
 const { dispatch } = require('../src/services/componentDispatch');
 const { LEVELS, FAQ_CATEGORIES } = require('../src/constants');
+const clock = require('../src/clock');
 const IDS = { user: '1005171993940852796', target: '1490787800168005713', channel: '223456789012345678', guild: '323456789012345678' };
 let next = 1n;
 
@@ -226,7 +227,11 @@ test('نماذج الأوامر الحقيقية: الخطأ يُصحَّح بز
   const retry = interaction({ customId: `form:retry:${formToken}`, level: LEVELS.STAFF });
   await dispatch(retry);
   assert.equal(retry.modal.toJSON().components[0].component.value, 'ظرف عائلي', 'لم تُحفظ القيم للتصحيح');
-  const good = interaction({ customId: `leave:modal:normal:form:${formToken}`, level: LEVELS.STAFF, texts: { reason: 'ظرف عائلي', start: '2026-10-01', end: '2026-10-05' } });
+  // تاريخ نسبي لا مثبّت: إجازة `normal` تشترط 48 ساعة إشعاراً، فتاريخ ثابت
+  // يصبح «اليوم» مع مرور الوقت ويفشل الاختبار بلا سبب في الكود.
+  const goodStart = clock.addDays(clock.today(), 10);
+  const goodEnd = clock.addDays(clock.today(), 14);
+  const good = interaction({ customId: `leave:modal:normal:form:${formToken}`, level: LEVELS.STAFF, texts: { reason: 'ظرف عائلي', start: goodStart, end: goodEnd } });
   await dispatch(good);
   assert.equal(forms.lookup({ customId: `form:retry:${formToken}`, user: { id: IDS.user }, guildId: IDS.guild }), null, 'بقيت جلسة النموذج بعد الإرسال');
   assert.equal(getDb().prepare('SELECT COUNT(*) c FROM leave_requests').get().c, 0, 'بطاقة المراجعة لا تنشئ الطلب');

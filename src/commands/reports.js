@@ -238,21 +238,25 @@ const WEIGHT_FIELDS = {
   ],
 };
 
+// `modals` يحوي بناة المواصفات التي تُمرَّر إلى forms.open فقط.
+// دوال البطاقات (performanceEmbed وغيرها) ليست مواصفات نماذج، وتصدَّر منفصلة
+// في module.exports — وجودها هنا يجعل اختبار المواصفات يتعامل معها كنموذج.
 const modals = {
-  performanceEmbed,
-  leaderboardEmbed,
-  teamEmbed,
-  loadEmbed,
   /** نموذج تعيين أوزان Score — القيم الافتراضية تأتي من الأوزان المحفوظة حالياً */
-  weights: ({ team, current = {} } = {}) => ({
-    id: `score:weightsmodal:${team}`,
-    title: `⚖️ أوزان Score — ${TEAMS[team] || team}`,
-    fields: (WEIGHT_FIELDS[team] || []).map(f => forms.field({
-      id: f.id, label: f.label, max: 3, value: num(current[f.id]) || 0,
-      description: `${f.hint} رقم بين 0 و100، ومجموع الأوزان يجب أن يساوي 100.`,
-    })),
-    note: 'المجموع يجب أن يساوي 100 بالضبط، وإلا تُرفض الأوزان ولا يتغيّر شيء.',
-  }),
+  weights: ({ team, current = {} } = {}) => {
+    // فريق غير معروف خطأ برمجي لا مُدخل مستخدم: يُرمى بدل بناء نموذج بلا حقول.
+    const defs = WEIGHT_FIELDS[team];
+    if (!defs) throw new Error(`فريق غير معروف لنموذج الأوزان: ${team}`);
+    return {
+      id: `score:weightsmodal:${team}`,
+      title: `⚖️ أوزان Score — ${TEAMS[team] || team}`,
+      fields: defs.map(f => forms.field({
+        id: f.id, label: f.label, max: 3, value: num(current[f.id]) || 0,
+        description: `${f.hint} رقم بين 0 و100، ومجموع الأوزان يجب أن يساوي 100.`,
+      })),
+      note: 'المجموع يجب أن يساوي 100 بالضبط، وإلا تُرفض الأوزان ولا يتغيّر شيء.',
+    };
+  },
 };
 
 module.exports = {
