@@ -34,10 +34,10 @@ module.exports = {
         let absenceStatus = 'نشط';
         let absenceColor = COLORS.success;
         if (lastActivityHours >= 96) {
-          absenceStatus = 'تحذير absence (96+ ساعة)';
+          absenceStatus = 'غياب مؤكَّد (96+ ساعة)';
           absenceColor = COLORS.danger;
         } else if (lastActivityHours >= 72) {
-          absenceStatus = 'تحذير initial (72+ ساعة)';
+          absenceStatus = 'تحذير أولي (72+ ساعة)';
           absenceColor = COLORS.warning;
 }
         
@@ -180,8 +180,8 @@ e.addFields({
           e.addFields({
             name: '⚠️ تحذيرات الغياب',
             value: lastActivityHours >= 96 
-              ? `⛔ لديك تحذير absence منذ ${Math.floor(lastActivityHours - 96)} ساعات\n⚠️ سيتم تنبيه الفريق إذا لم تكن نشطاً خلال ${Math.max(0, 96 - lastActivityHours)} ساعات القادمة`
-              : `⚠️ ستحصل على تحذير absence خلال ${Math.floor(hoursUntilWarning)} ساعات إذا لم تكن نشطاً\n🚨 سيحصل الفريق على تنبيه خلال ${Math.max(0, hoursUntilAlert)} ساعات إذا لم تكن نشطاً`,
+              ? `⛔ غيابك تجاوز 96 ساعة منذ ${Math.floor(lastActivityHours - 96)} ساعات\n⚠️ سيُنبَّه الفريق إذا لم تكن نشطاً خلال ${Math.max(0, 96 - lastActivityHours)} ساعات قادمة`
+              : `⚠️ ستحصل على تحذير أولي خلال ${Math.floor(hoursUntilWarning)} ساعات إذا لم تكن نشطاً\n🚨 سيُنبَّه الفريق خلال ${Math.max(0, hoursUntilAlert)} ساعات إذا لم تكن نشطاً`,
           });
 }
         

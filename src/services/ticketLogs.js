@@ -2,7 +2,6 @@
 const { getDb } = require('../database');
 const logger = require('../logger').log('ticket-logs');
 const settings = require('./settings');
-const staffService = require('./staff');
 
 const ID_RE = /^\d{15,22}$/;
 

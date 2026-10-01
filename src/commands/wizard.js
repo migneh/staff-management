@@ -29,7 +29,23 @@ async function guard(i, token) {
   if (d.used) { await replyEphemeral(i, 'تم استخدام هذا التأكيد بالفعل. راجع نتيجة الإجراء قبل بدء طلب جديد.', COLORS.info); return null; }
   return d;
 }
-function schema(d) { return command(d.name).data.toJSON().options || []; }
+/** حد ديسكورد: 5 حقول (Label) في المودال الواحد. */
+const MODAL_FIELD_LIMIT = 5;
+
+/**
+ * خيارات الأمر كما تُعرض في المودال.
+ * إن تجاوز الأمر الحد، نُسقط الخيارات الاختيارية الأخيرة (مثل الأولوية) بدل رفض
+ * الأمر كاملاً: القيمة لها افتراض في المعالج، بإسقاطها نُبقي المسار فعّالاً
+ * ونتجنّب «استخدم /assign-task مباشرة» الذي يُخرج المستخدم من المعالج بلا رجعة.
+ * الخيارات المطلوبة لا تُسقط أبداً — إسقاطها يجعل الإجراء غير قابل للتنفيذ.
+ */
+function schema(d) {
+  const options = command(d.name).data.toJSON().options || [];
+  if (options.length <= MODAL_FIELD_LIMIT) return options;
+  const required = options.filter(o => o.required);
+  if (required.length > MODAL_FIELD_LIMIT) return options; // خارج قدرتنا: يبقى الردّ الحرفي
+  return [...required, ...options.filter(o => !o.required)].slice(0, MODAL_FIELD_LIMIT);
+}
 function form(d) {
   const modal = new ModalBuilder().setCustomId(`wizard:submit:${d.token}:${d.revision}`).setTitle('إعداد الإجراء');
   for (const o of schema(d)) {
@@ -82,7 +98,9 @@ async function start(i, name) {
   const denied = commandAccessError(c, accessContext(i));
   if (denied) return replyEphemeral(i, denied, COLORS.danger);
   const options = c.data.toJSON().options || [];
-  if (options.length > 5 || options.some(o => ![Type.String, Type.Integer, Type.Boolean, Type.User, Type.Channel].includes(o.type))) return replyEphemeral(i, `استخدم /${name} لإدخال خيارات هذا الأمر.`, COLORS.info);
+  // draft مؤقت حتى تمر schema(d) على نفس القواعد وتقرّر ما يُعرض فعلاً.
+  const probe = { name, options: [] };
+  if (schema(probe).some(o => ![Type.String, Type.Integer, Type.Boolean, Type.User, Type.Channel].includes(o.type))) return replyEphemeral(i, `استخدم /${name} لإدخال خيارات هذا الأمر.`, COLORS.info);
   for (const [key, d] of drafts) if (d.expires <= Date.now()) drafts.delete(key);
   if (drafts.size >= 300) drafts.delete(drafts.keys().next().value);
   const token = randomBytes(8).toString('hex');

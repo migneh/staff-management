@@ -16,7 +16,7 @@ module.exports = {
         .addStringOption(o => o.setName('user').setDescription('تصفية حسب المستخدم (معرف أو منشن)'))
         .addStringOption(o => o.setName('limit').setDescription('عدد السجلات (الافتراضي: 20, الأقصى: 100)'))
         .addStringOption(o => o.setName('days').setDescription('عدد الأيام السابقة (الافتراضي: 7)'))
-        .addBooleanOption(o => o.setName('detailed').setDescription('عرض تفاصيل JSON complète')),
+        .addBooleanOption(o => o.setName('detailed').setDescription('عرض تفاصيل JSON الكاملة')),
       // سجل التدقيق يحتوي إنذارات وملاحظات سرية وأسباب استقالات — كان متاحاً بالخطأ لكل إداري (حتى Helper)؛
       // يجب أن يطابق صلاحية /audit-log (الإدارة العليا فقط).
       level: LEVELS.MANAGEMENT,

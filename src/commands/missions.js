@@ -293,13 +293,19 @@ async function createTeamMission(i) {
     dueDate = due;
   }
   
-  const task = missions.createTeamMission(
-    team,
-    title,
-    description,
-    dueDate,
-    i.user.id
-  );
+  let task;
+  try {
+    task = missions.createTeamMission(
+      team,
+      title,
+      description,
+      dueDate,
+      i.user.id
+    );
+  } catch (e) {
+    console.error(`خطأ في إنشاء المهمة الجماعية (${team}) بواسطة ${i.user.id}:`, e);
+    return replyEphemeral(i, '❌ حدث خطأ أثناء إنشاء المهمة الجماعية. راجع السجل.', COLORS.danger);
+  }
   
   if (!task) return replyEphemeral(i, '❌ فشل في إنشاء المهمة الجماعية.', COLORS.danger);
   

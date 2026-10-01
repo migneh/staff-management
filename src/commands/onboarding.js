@@ -69,10 +69,11 @@ async function assignMentor(i) {
   // التحقق من الصلاحية - فقط الإدارة يمكنهم تعيين المرشدين
   // ملاحظة: صفوف staff_members لا تملك حقل "level" رقمياً، فكانت هذه المقارنة تفشل دائماً
   // وتمنع حتى Boss/General Manager من تعيين مرشدين. المستوى الصحيح هو i.staffLevel.
-  if (i.staffLevel < LEVELS.MANAGEMENT) {
+  // نستخدم صيغة >= الفاشلة-بإغلاق: لو كان staffLevel undefined تمرّ المقارنة الخارجة عن النطاق.
+  if (!(i.staffLevel >= LEVELS.MANAGEMENT)) {
     return replyEphemeral(i, '❌ ليس لديك صلاحية لتعيين مرشدين.', COLORS.danger);
   }
-  
+
   const newMember = staffService.get(newUser.id);
   const mentorMember = staffService.get(mentorUser.id);
   
@@ -88,11 +89,10 @@ async function assignMentor(i) {
   if (!result.ok) {
     return replyEphemeral(i, `❌ فشل في تعيين المرشد: ${result.error}`, COLORS.danger);
   }
-  
-  const e = embed('✅ تم تعيين المرشد بنجاح', 
-    `تم تعيين <@${mentorUser.id}> كمرشد لـ <@${newUser.id}>\n\n` +
-    `📋 سيتلقى الموظف مهام تأهيل محسنة تتضمن اجتماعاً مع المرشد لتقييم الجاهزية.`,
-    COLORS.success);
+
+  // نؤجل الرد قبل أي استدعاء شبكي: إشعار المرشد ثم الموظف ذهابان متسلسلان
+  // وقد يتجاوزان نافذة الثلاث ثوانٍ، فينجح التعيين بينما يرى المستخدم "فشل التفاعل".
+  await i.deferReply({ ephemeral: true });
   
   // إشعار المرشد والموظف
   try {
@@ -124,7 +124,10 @@ async function assignMentor(i) {
     // فشل الإرسال الخاص ليس حاسماً
   }
   
-  return replyEphemeral(i, `✅ تم تعيين <@${mentorUser.id}> كمرشد لـ <@${newUser.id}>.`, COLORS.success);
+  return i.editReply({ embeds: [embed('✅ تم تعيين المرشد بنجاح',
+    `تم تعيين <@${mentorUser.id}> كمرشد لـ <@${newUser.id}>\n\n` +
+    `📋 سيتلقى الموظف مهام تأهيل محسنة تتضمن اجتماعاً مع المرشد لتقييم الجاهزية.`,
+    COLORS.success)] });
 }
 
 /**
@@ -134,7 +137,8 @@ async function removeMentor(i) {
   const user = i.options.getUser('user');
   
   // التحقق من الصلاحية - فقط الإدارة يمكنهم إزالة المرشدين
-  if (i.staffLevel < LEVELS.MANAGEMENT) {
+  // fail-closed: صيغة >= ترفض القيم غير الرقمية/غير المعرّفة
+  if (!(i.staffLevel >= LEVELS.MANAGEMENT)) {
     return replyEphemeral(i, '❌ ليس لديك صلاحية لإزالة المرشدين.', COLORS.danger);
   }
   
@@ -149,12 +153,7 @@ async function removeMentor(i) {
     return replyEphemeral(i, `❌ فشل في إزالة المرشد: ${result.error}`, COLORS.danger);
   }
   
-  const e = embed('✅ تم إزالة المرشد بنجاح', 
-    `تم إزالة المرشد من <@${user.id}>\n\n` +
-    `سيستمر الموظف في receiving مهام التأهيل العادية دون اجتماع تقييم مع المرشد.`,
-    COLORS.success);
-  
-  return replyEphemeral(i, `✅ تم إزالة المرشد من <@${user.id}>.`, COLORS.success);
+  return replyEphemeral(i, `✅ تم إزالة المرشد من <@${user.id}>.\nسيستمر الموظف في متابعة مهام التأهيل العادية دون اجتماع تقييم مع المرشد.`, COLORS.success);
 }
 
 /**

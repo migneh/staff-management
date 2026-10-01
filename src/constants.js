@@ -180,6 +180,23 @@ const WARNING_TYPES = {
   final: { label: 'إنذار أخير', emoji: '🔴', freezeDays: 60, suspend: true, minLevel: LEVELS.BOSS },
 };
 
+// ===== التقدير و«جدار الإنجازات» =====
+// التقدير هنا ترشيحٌ للزملاء يُرسل للمراجعة، وليس نظام نقاط.
+//
+// points = 0 لأن نظام النقاط (نقاط التقدير) أُزيل من المشروع بالكامل:
+// حُذفت services/points.js وجدول promotion_points وأوامر /give-points وأمر التقدير.
+// لذلك لا يُكتب أي مبلغ في أي مكان هنا، ولا يوجد سجل أرصدة يُحدَّث.
+// الاعتماد يعلن الإنجاز في قناة staff-wins ويبلّغ العضو، ولا يمنحه أي رصيد.
+//
+// dailyCap: سقف الترشيحات اليومية لكل مرشِّح (الرقم اختير لأن README:120
+// ينص على "ترشيحاً محدوداً يومياً" دون تحديد رقم — 3 توازن بين التشجيع ومعالجة الإزعاج).
+// reasonMaxLength: حد Discord لسبب الترشيح (1024 كحد أعلى، و600 أطول من الأكثر شيوعاً).
+const RECOGNITION = {
+  points: 0,
+  dailyCap: 3,
+  reasonMaxLength: 600,
+};
+
 // ===== شروط الترقية (محدثة حسب النظام v3.0) =====
 // approval: مستوى الصلاحية المطلوب للمراجع
 // approvals: عدد الموافقات المستقلة المطلوبة (نصاب) — مطابق لما هو معلن للفريق
@@ -273,5 +290,5 @@ module.exports = {
   CHANNEL_META, CHANNEL_KEYS, OPTIONAL_CHANNEL_KEYS,
   ACTIVITY_WEIGHTS, ACTIVITY_TYPE_NAMES, SPAM, ABSENCE, LEAVE_TYPES, LEAVE_RULES, LEAVE_GLOBAL, VACATION_ROLE_TIMING, WEEKDAYS_AR,
   RESIGNATION_REASONS, RESIGNATION_GLOBAL, MOD_ACTION_TYPES,
-  NOTE_TYPES, WARNING_TYPES, SUPPORT_PROMOTIONS, MOD_PROMOTIONS, PROBATION, SCORE_WEIGHTS,
+  NOTE_TYPES, WARNING_TYPES, RECOGNITION, SUPPORT_PROMOTIONS, MOD_PROMOTIONS, PROBATION, SCORE_WEIGHTS,
 };

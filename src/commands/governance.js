@@ -29,23 +29,31 @@ module.exports = {
         if (!roleId) return replyEphemeral(i, `❌ لم يتم ربط رتبة **${rank}**. افتح /setup ثم حدد رتب الإدارة العامة.`, COLORS.danger);
         if (user.bot) return replyEphemeral(i, '❌ لا يمكن تعيين بوت في الإدارة العامة.', COLORS.danger);
 
+        // نؤجل الرد قبل أي استدعاء شبكي: members.fetch ثم إزالة/إضافة الرتب ثم log
+        // ثلاث عمليات متسلسلة قد تتجاوز نافذة الثلاث ثوانٍ رغم نجاحها فعلياً.
+        await i.deferReply({ ephemeral: true });
+
+        // بعد التأجيل، الردود اللاحقة يجب أن تُعدّل الرسالة المؤجلة (editReply) لا أن تُتبعها،
+        // وإلا بقيت رسالة "جارٍ التنفيذ…" ظاهرة بجانب رسالة النتيجة.
+        const deny = (message) => i.editReply({ embeds: [embed(null, message, COLORS.danger)] });
+
         const member = await i.guild.members.fetch(user.id).catch(() => null);
-        if (!member) return replyEphemeral(i, '❌ العضو غير موجود في السيرفر.', COLORS.danger);
+        if (!member) return deny('❌ العضو غير موجود في السيرفر.');
         const botMember = i.guild.members.me;
         const role = i.guild.roles.cache.get(roleId);
-        if (!role) return replyEphemeral(i, '❌ رتبة الإدارة العامة لم تعد موجودة.', COLORS.danger);
-        if (botMember && role.position >= botMember.roles.highest.position) return replyEphemeral(i, '❌ رتبة البوت يجب أن تكون أعلى من رتبة الإدارة العامة.', COLORS.danger);
+        if (!role) return deny('❌ رتبة الإدارة العامة لم تعد موجودة.');
+        if (botMember && role.position >= botMember.roles.highest.position) return deny('❌ رتبة البوت يجب أن تكون أعلى من رتبة الإدارة العامة.');
 
         const db = getDb();
         const existed = staffService.get(user.id);
         if (action === 'assign') {
           if (rank === 'General Manager') {
             const current = db.prepare("SELECT user_id FROM staff_members WHERE team = 'general_management' AND rank = 'General Manager' AND status != 'resigned' AND user_id != ?").get(user.id);
-            if (current) return replyEphemeral(i, `❌ يوجد General Manager حالي بالفعل: <@${current.user_id}>. أزله أولاً أو استخدم قرار نقل واضح.`, COLORS.danger);
+            if (current) return deny(`❌ يوجد General Manager حالي بالفعل: <@${current.user_id}>. أزله أولاً أو استخدم قرار نقل واضح.`);
           }
           const removed = await staffService.removeAllStaffRoles(member);
-          if (!removed) return replyEphemeral(i, '❌ لم أستطع إزالة الرتب الإدارية القديمة. تحقق من صلاحيات البوت.', COLORS.danger);
-          try { await member.roles.add(roleId, `تعيين ${rank} عبر Staff Manager`); } catch (e) { return replyEphemeral(i, `❌ فشل إضافة الرتبة: ${e.message}`, COLORS.danger); }
+          if (!removed) return deny('❌ لم أستطع إزالة الرتب الإدارية القديمة. تحقق من صلاحيات البوت.');
+          try { await member.roles.add(roleId, `تعيين ${rank} عبر Staff Manager`); } catch (e) { return deny(`❌ فشل إضافة الرتبة: ${e.message}`); }
           const saved = staffService.ensure(member, { reinstate: true });
           if (saved) staffService.update(user.id, { status: 'active' });
           staffService.recordRankChange(user.id, {
@@ -58,18 +66,18 @@ module.exports = {
           });
           audit.record({ action: 'general_management_assigned', actorId: i.user.id, targetId: user.id, details: { rank, reason }, channelId: i.channelId });
           await log(i.client, '🏛️ تعيين في الإدارة العامة', `<@${user.id}> أصبح **${rank}** بواسطة <@${i.user.id}>${reason ? `\nالسبب: ${reason}` : ''}`, COLORS.success);
-          return i.reply({ embeds: [embed('✅ تم التعيين', `<@${user.id}> أصبح **${rank}** في **الإدارة العامة للسيرفر**.\n\nلا توجد ترقية تلقائية لهذه الرتبة؛ أي تغيير لاحق يحتاج قراراً من Server Manager أو General Manager الحالي.`, COLORS.success)], ephemeral: true });
+          return i.editReply({ embeds: [embed('✅ تم التعيين', `<@${user.id}> أصبح **${rank}** في **الإدارة العامة للسيرفر**.\n\nلا توجد ترقية تلقائية لهذه الرتبة؛ أي تغيير لاحق يحتاج قراراً من Server Manager أو General Manager الحالي.`, COLORS.success)] });
         }
 
         const existing = staffService.get(user.id);
-        if (!existing || existing.team !== 'general_management') return replyEphemeral(i, '❌ هذا العضو ليس مسجلاً في الإدارة العامة.', COLORS.danger);
+        if (!existing || existing.team !== 'general_management') return deny('❌ هذا العضو ليس مسجلاً في الإدارة العامة.');
         const removed = await staffService.removeAllStaffRoles(member);
-        if (!removed) return replyEphemeral(i, '❌ لم أستطع إزالة الرتب الإدارية. تحقق من صلاحيات البوت.', COLORS.danger);
+        if (!removed) return deny('❌ لم أستطع إزالة الرتب الإدارية. تحقق من صلاحيات البوت.');
         staffService.setStatus(user.id, 'resigned');
         staffService.recordRankChange(user.id, { fromRank: existing.rank, toRank: existing.rank, team: 'general_management', changeType: 'remove', reason, actorId: i.user.id });
         audit.record({ action: 'general_management_removed', actorId: i.user.id, targetId: user.id, details: { previousRank: existing.rank, reason }, channelId: i.channelId });
         await log(i.client, '🏛️ إزالة من الإدارة العامة', `<@${user.id}> — ${existing.rank} — بواسطة <@${i.user.id}>${reason ? `\nالسبب: ${reason}` : ''}`, COLORS.warning);
-        return i.reply({ embeds: [embed('✅ تمت الإزالة', `تمت إزالة <@${user.id}> من الإدارة العامة وإزالة الرتب الإدارية المرتبطة به.`, COLORS.success)], ephemeral: true });
+        return i.editReply({ embeds: [embed('✅ تمت الإزالة', `تمت إزالة <@${user.id}> من الإدارة العامة وإزالة الرتب الإدارية المرتبطة به.`, COLORS.success)] });
       },
     },
   ],

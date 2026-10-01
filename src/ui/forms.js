@@ -3,7 +3,7 @@ const { randomBytes } = require('node:crypto');
 const { ModalBuilder, LabelBuilder, TextInputBuilder, TextInputStyle, StringSelectMenuBuilder, UserSelectMenuBuilder,
   TextDisplayBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType } = require('discord.js');
 const { FAQ_CATEGORIES } = require('../constants');
-const { normalizeDigits, today, addDays } = require('../utils');
+const { normalizeDigits, today, addDays, isValidDate } = require('../utils');
 
 const TTL = 15 * 60 * 1000;
 const LIMIT = 500;
@@ -239,27 +239,40 @@ function lookup(i) {
   if (!i.customId.startsWith('form:retry:') && i.customId !== `${s.originalId}:form:${s.token}`) return null;
   return s;
 }
+/**
+ * يقرأ قيم النموذج مرة واحدة، فتبقى قراءة الجلسة كلّها من مصدر واحد.
+ * القاعدة: كل رفض هنا = الإدخال ناقص أو غير صالح ⇒ تبقى الجلسة ويُعرض زرّ التصحيح.
+ * كل نجاح هنا = اكتمل الإدخال ⇒ لا يعيد أي معالج بعده فتح النموذج.
+ */
 function capture(i, session) {
   i.formSession = session;
   session.retryable = false;
+  // كل محاولة إرسال تبدأ من الصفر: حالة التصحيح من محاولة سابقة لا تُورَث.
+  session.invalid = false;
+  // كل رفض يمرّ من هذا ⇒ صِفة «غير صالح» تُضبط في موضع واحد لا في المتصل.
+  const reject = message => { session.invalid = true; return message; };
   const values = {};
   for (const label of session.data.components) {
     const c = label.component;
     if (!c) continue;
     let f;
     try { f = i.fields.getField(c.custom_id); } catch { f = { custom_id: c.custom_id, type: c.type, value: '', values: [] }; }
-    if (f.type !== c.type) { if (c.type === ComponentType.TextInput && f.value === '') f.value = ''; else if (c.type !== ComponentType.TextInput && f.type !== c.type) return `نوع حقل «${label.label}» غير صحيح. افتح النموذج من جديد.`; }
+    if (f.type !== c.type) { if (c.type === ComponentType.TextInput && f.value === '') f.value = ''; else if (c.type !== ComponentType.TextInput && f.type !== c.type) return reject(`نوع حقل «${label.label}» غير صحيح. افتح النموذج من جديد.`); }
     let v = f.type === ComponentType.TextInput ? f.value : (f.values || []);
     if (Array.isArray(v)) {
-      if (v.length > (c.max_values || 1) || v.length < (c.min_values || 0) || (c.type === ComponentType.StringSelect && v.some(value => !c.options.some(o => o.value === value)))) return `اختر قيمة صالحة في «${label.label}».`;
+      if (v.length > (c.max_values || 1) || v.length < (c.min_values || 0) || (c.type === ComponentType.StringSelect && v.some(value => !c.options.some(o => o.value === value)))) return reject(`اختر قيمة صالحة في «${label.label}».`);
       if (c.type === ComponentType.StringSelect) c.options.forEach(o => { o.default = v.includes(o.value); });
       else if (c.type === ComponentType.UserSelect) c.default_values = v.map(id => ({ id, type: 'user' }));
       values[c.custom_id] = v.includes('all') ? 'all' : v.join(',');
     } else {
       c.value = v;
-      if (typeof v !== 'string' || v.length > (c.max_length || 4000) || (v.length && v.length < (c.min_length || 0))) return `راجع طول النص في «${label.label}».`;
-      if (DATE_FIELDS.has(c.custom_id)) v = normalizeDate(v);
-      else if (NUMERIC_FIELDS.has(c.custom_id)) v = normalizeDigits(v).replace(/،/g, ',');
+      if (typeof v !== 'string' || v.length > (c.max_length || 4000) || (v.length && v.length < (c.min_length || 0))) return reject(`راجع طول النص في «${label.label}».`);
+      if (DATE_FIELDS.has(c.custom_id)) {
+        v = normalizeDate(v);
+        // تاريخ مُطبّع لكنه غير موجود تقويمياً (32/13) لا يجوز أن يعبر إلى المعالج:
+        // يُرفض في موضعه ليصير زرّ «تصحيح» نتيجةً طبيعية للرفض لا استثناءً لكل معالج على حدة.
+        if (v && !isValidDate(v)) return reject(`راجع تاريخ «${label.label || DATE_LABELS[c.custom_id] || c.custom_id}» — الصيغة المقبولة سنة-شهر-يوم مثل ${today()}.`);
+      } else if (NUMERIC_FIELDS.has(c.custom_id)) v = normalizeDigits(v).replace(/،/g, ',');
       values[c.custom_id] = v;
     }
   }
@@ -267,17 +280,16 @@ function capture(i, session) {
   const original = i.fields;
   i.fields = Object.create(original);
   i.fields.getTextInputValue = id => Object.hasOwn(values, id) ? values[id] : original.getTextInputValue(id);
-  i.formSession = session;
-  session.retryable = false;
   for (const label of session.data.components) {
     const c = label.component;
-    if (c && c.required !== false && !String(values[c.custom_id] || '').trim()) return `أكمل حقل «${label.label}». لم تُحفظ البيانات بعد.`;
+    if (c && c.required !== false && !String(values[c.custom_id] || '').trim()) return reject(`أكمل حقل «${label.label}». لم تُحفظ البيانات بعد.`);
   }
   return null;
 }
 function retryRow(i) {
   const s = i.formSession;
   if (!s || !sessions.has(s.token)) return null;
+  // وجود الزرّ نفسه هو الإشارة: «تصحيح» معروض ⇒ الإرسال لم يكتمل.
   s.retryable = true;
   return new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`form:retry:${s.token}`).setLabel('تصحيح البيانات').setEmoji('✏️').setStyle(ButtonStyle.Primary));
 }
@@ -288,7 +300,9 @@ async function reopen(i, s) {
 }
 function finish(i, s, failed = false) {
   s.busy = false;
-  if (failed || !s.retryable) sessions.delete(s.token);
+  // تبقى الجلسة مرّتين لا ثالثة: عند رفض التحقق (failed)، أو عند عرض زرّ التصحيح
+  // فعلاً (retryable). كل ما عداه نموذج اكتمل ⇒ تُحذف جلسته فلا يُعاد فتحه.
+  if (!failed && !s.retryable) sessions.delete(s.token);
   delete i.formSession;
 }
 module.exports = {
