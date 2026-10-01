@@ -2,7 +2,7 @@
 const { SlashCommandBuilder } = require('discord.js');
 const { LEVELS } = require('../constants');
 const settings = require('../services/settings');
-const { embed, COLORS, replyEphemeral } = require('../utils');
+const { COLORS, replyEphemeral } = require('../utils');
 const kit = require('../ui/kit');
 
 /**
@@ -19,7 +19,7 @@ const kit = require('../ui/kit');
 const FEATURES = [
   { key: 'weeklyReports', label: 'تقارير أسبوعية تلقائية', group: 'reports', hint: 'يُوقف التقرير الأسبوعي المجدول' },
   { key: 'monthlyReports', label: 'تقارير شهرية تلقائية', group: 'reports', hint: 'يُوقف التقرير الشهري المجدول' },
-  { key: 'activityTracking', label: 'تتبع النشاط', group: 'tracking', hint: 'مصدر تسجيل النشاط في activity_logs' },
+  { key: 'activityTracking', label: 'تتبع النشاط', group: 'tracking', hint: '⚠️ غير مربوط: إيقافه لا يوقف تسجيل النشاط بعد' },
   { key: 'punishmentSystem', label: 'نظام العقوبات', group: 'system', hint: 'يُوقف /warn و /note' },
   { key: 'detailedSystemStatus', label: 'حالة النظام التفصيلية', group: 'system', hint: 'يُوقف الوضع التفصيلي في /system-status' },
   { key: 'promotionProgress', label: 'أمر تقدم الترقية', group: 'commands', hint: 'يُوقف أمر تقدم الترقية' },
