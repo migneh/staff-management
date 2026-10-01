@@ -586,13 +586,15 @@ function migrateFaqCategories(database) {
       const after = remap(before);
       if (JSON.stringify(before) !== JSON.stringify(after)) moveTemplate.run(JSON.stringify(after), row.id);
     }
+    // عَلَم التشغيل يُكتب داخل المعاملة نفسها. كان يُكتب بعدها، فموت البوت بين
+    // COMMIT والعلامة يجعل الخريطة تُعاد على بيانات مُعاد ترقييمها — وهي ليست
+    // idempotent (3 ← 2 ← 1)، فتُهبط كل التصنيفات إلى 1 بلا رجعة.
+    database.prepare(`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
+      .run(FAQ_MIGRATION_KEY, FAQ_MIGRATION_VERSION);
     return moved;
   });
   const moved = run();
-
-  database.prepare(`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
-    .run(FAQ_MIGRATION_KEY, FAQ_MIGRATION_VERSION);
   if (moved) console.log(`[migrate] FAQ: أُعيد ترقيم ${moved} مدخلاً بعد إزالة تصنيف «قوانين فريق الإشراف».`);
 }
 
