@@ -60,10 +60,15 @@ module.exports = {
         await i.deferReply({ ephemeral: true });
         const dryRun = !(i.options.getBoolean('confirm') || false);
         const r = retention.run({ dryRun });
+        // months = أشهر متمايزة دائماً (retention.rollupActivity يضمن المعنى
+        // الواحد في المسارين). وkit.plural يجعل العدد العربي صحيحاً: شهر واحد /
+        // شهران / N أشهر / N شهراً، بدل «1 شهراً» في كل الحالات.
+        const monthsWord = kit.plural(r.rollup.months, 'شهر واحد', 'شهران', '{n} أشهر', '{n} شهراً');
+        const monthsLabel = `${r.rollup.months} (${monthsWord.replace('{n}', r.rollup.months)})`;
         if (dryRun) {
           return i.editReply({
             embeds: [embed('🧪 معاينة صيانة البيانات', `${divider}\n`
-              + `📦 **الرسائل الخام قبل ${r.rollup.cutoff}:** ستُجمَّع في ${r.rollup.months} شهراً ثم تُحذف (${r.activity.pending} صف)\n`
+              + `📦 **الرسائل الخام قبل ${r.rollup.cutoff}:** ستُجمَّع في ${monthsLabel} (${r.rollup.rows} سجل) ثم تُحذف (${r.activity.pending} صف)\n`
               + `📝 **سجل العمليات قبل ${r.audit.cutoff.slice(0, 7)}:** ${r.audit.pending} سجل\n`
               + `🗄️ **حجم القاعدة:** ${r.sizeBeforeMb} م.ب\n\n`
               + 'لم يُحذف أي شيء. للتنفيذ: أعد الأمر مع `confirm: true`.', COLORS.info)],
@@ -72,9 +77,9 @@ module.exports = {
         audit.record({ action: 'data_maintenance', actorId: i.user.id, details: r, channelId: i.channelId });
         return i.editReply({
           embeds: [embed('🧹 تمت صيانة البيانات', `${divider}\n`
-            + `📦 جُمّع **${r.rollup.rows}** سجل نشاط في **${r.rollup.months}** شهراً\n`
+            + `📦 جُمّع **${r.rollup.rows}** سجل نشاط في **${monthsLabel}**\n`
             + `🗑️ حُذف **${r.activity.deleted}** صف نشاط خام و**${r.audit.deleted}** سجل عمليات\n`
-            + `🗄️ الحجم: ${r.sizeBeforeMb} → **${r.sizeAfterMb}** م.ب${r.vacuumed ? ' (VACUUM)' : ''}`, COLORS.success)],
+            + `🗄️ الحجم: ${r.sizeBeforeMb} → **${r.sizeAfterMb}** م.ب${r.vacuumed ? ' (استُرجعت المساحة)' : ''}`, COLORS.success)],
         });
       },
     },

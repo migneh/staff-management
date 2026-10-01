@@ -46,6 +46,12 @@ function interaction({ customId = '', level = LEVELS.STAFF, team = 'support', st
     },
     async reply(payload) { this.replied = true; this.payload = payload; },
     async update(payload) { this.replied = true; this.updated = true; this.payload = payload; },
+    // واجهات التأجيل: handlers المعدَّلة تؤجّل قبل أي استدعاء شبكي ثم تنهي
+    // بـ editReply. كانت هذه البصمة ناقصة هنا فسقطت الاختبارات بـ
+    // «i.deferUpdate is not a function» — لا في السلوك المُختبَر.
+    async deferUpdate() { this.deferred = true; this.replied = true; },
+    async deferReply() { this.deferred = true; this.replied = true; },
+    async editReply(payload) { assert(this.replied, 'editReply بلا تأجيل'); this.payload = payload; },
     async followUp(payload) { this.replied = true; this.followUpPayload = payload; },
     async showModal(modal) { this.modal = modal; },
   };

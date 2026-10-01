@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const { getDb } = require('../database');
 const settings = require('./settings');
 const { ACTIVITY_WEIGHTS, SPAM } = require('../constants');
-const { today } = require('../utils');
+const clock = require('../clock');
 
 // ===== تصنيف القناة =====
 function classifyChannel(channel) {
@@ -77,7 +77,7 @@ function record(userId, channel, content) {
     AND created_at >= datetime('now', ?) LIMIT 1`).get(userId, h, `-${Math.floor(SPAM.duplicateWindowMs / 1000)} seconds`);
   if (dup) return { counted: false, reason: 'duplicate', type };
 
-  const day = today();
+  const day = clock.today();
   if (type === 'general') {
     const { c } = db.prepare(`SELECT COUNT(*) c FROM activity_logs WHERE user_id = ? AND day = ? AND channel_type = 'general'`).get(userId, day);
     if (c >= SPAM.maxGeneralPerDay) return { counted: false, reason: 'daily_cap', type };
@@ -88,13 +88,30 @@ function record(userId, channel, content) {
   return { counted: true, type };
 }
 
-/** إحصائيات نشاط خلال فترة (بالأيام) */
+/**
+ * إحصائيات نشاط خلال نافذة **أيام تقويمية** (بالأيام) — آخر `days` يوم منطقي.
+ *
+ * النافذة على عمود `day` المفهرس مع `user_id` (idx_activity_user_day)، لا على
+ * `created_at`. السبب في clock.dayWindow: `day` تاريخ مجرّد (YYYY-MM-DD) مخزَّن
+ * بتوقيت السيرفر عبر clock.today، فمقارنته نصّيةً على فهرس B-tree حدٌّ صالح —
+ * بخلاف `created_at >= datetime('now', ?)` الذي لا يستطيع أي فهرس أن يت alcance به
+ * معرّف المستخدم، فكان SQLite يقرأ **كل** الصفوف المحفوظة لذلك العضو ويدفعها
+ * عبر شجرة B-tree مؤقتة للتجميع: 236 مللي ثانية و146 ألف صف ليعطي جواب 6 آلاف.
+ *
+ * الحدّان `>=` و`<=` على عمود تاريخ مجرّد: `day` لا يحمل جزءاً زمنياً فلا فخّ
+ * 23:59:59 هنا أصلاً (عكس أعمدة created_at في clock.dayWindow)، ويبقى آخر يوم
+ * مشمولاً بالكامل. وهذا هو نفسه تعريف النافذة في services/score.js
+ * monthlyRaw — فالتقارير كلها تجيب عن الفترة نفسها.
+ */
 function stats(userId, days = 30) {
   const db = getDb();
-  const since = `-${days} days`;
+  const windowDays = Math.max(1, Number(days) || 30);
+  const end = clock.today();
+  const start = clock.addDays(end, -(windowDays - 1));
   const rows = db.prepare(`SELECT channel_type, COUNT(*) c, SUM(weight) w FROM activity_logs
-    WHERE user_id = ? AND created_at >= datetime('now', ?) GROUP BY channel_type`).all(userId, since);
-  const { d } = db.prepare(`SELECT COUNT(DISTINCT day) d FROM activity_logs WHERE user_id = ? AND created_at >= datetime('now', ?)`).get(userId, since);
+    WHERE user_id = ? AND day >= ? AND day <= ? GROUP BY channel_type`).all(userId, start, end);
+  const { d } = db.prepare('SELECT COUNT(DISTINCT day) d FROM activity_logs WHERE user_id = ? AND day >= ? AND day <= ?')
+    .get(userId, start, end);
   const byType = {};
   let messages = 0, weighted = 0;
   for (const r of rows) { byType[r.channel_type] = r.c; messages += r.c; weighted += r.w; }

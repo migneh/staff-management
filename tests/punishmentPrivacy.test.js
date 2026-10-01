@@ -59,6 +59,12 @@ function interaction(client, fields = {}) {
     fields: { getTextInputValue: (id) => fields[id] || '' },
     async reply(p) { this.payload = p; this.replied = true; },
     async update(p) { this.payload = p; this.replied = true; },
+    // punish:notekok / punish:warningok يؤجّلان قبل النشر في قناة السجلات ثم
+    // ينهيان بـ editReply، ويبقى التأكيد الخاص للإداري followUp. البصمة
+    // الناقصة هنا كانت تُسقط الاختبارات بـ TypeError لا بفشل سلوك.
+    async deferUpdate() { this.deferred = true; this.replied = true; },
+    async deferReply() { this.deferred = true; this.replied = true; },
+    async editReply(p) { this.payload = p; this.replied = true; },
     async followUp(p) { this.follow = p; },
   };
   return i;

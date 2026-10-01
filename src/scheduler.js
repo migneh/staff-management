@@ -32,6 +32,37 @@ const retention = require('./services/retention');
 const EXEMPT = INACTIVE_STATUSES;
 
 // ===== فاحص الغياب — يتجمد أثناء الإجازة =====
+
+/**
+ * هل انتهت حلقة الغياب لهذا العضو؟ العلامتان تُمسحان معاً.
+ *
+ * `staff.js` touchActivity يصفّر absence_alert_level وحده (وليس ملفنا)، فلا
+ * يبقى إلا أن نمسح علامة الرسالة الخاصة بأنفسنا. لولا هذا صارت الرسالة التي
+ * وُعد بها العضو في الجولة الأولى تُرسَل مرة واحدة في حياته: يعود من الغياب،
+ * يغيب مرة أخرى، ولا تصله رسالة أبداً.
+ */
+function clearAbsenceMarkers(userId) {
+  getDb().prepare('UPDATE staff_members SET absence_dm_sent_at = NULL WHERE user_id = ? AND absence_dm_sent_at IS NOT NULL').run(userId);
+}
+
+/**
+ * العتبتان مستقلتان، لا شجرة if/else.
+ *
+ * السبب الذي كان يبتلع الرسالة: `if (staff96) … else if (dm72) …`. من تُرصد
+ * أول مرة فوق 96 ساعة — وهو بالضبط حال كل إعادة تشغيل فيها غائب — يأخذ فرع
+ * التنبيه الإداري، فيُرفع إلى المستوى 2، ولا يصله شيء. والرسالة 72 ساعة
+ * ليست تنبيهاً بديلاً: هي ما يَعِد العضو بأن عليه تقديم طلب إجازة، وهي
+ * وحدها التي تعطي الغائب سبباً للخروج من الغياب. فرِدٌ واحد يحمل عدّادَين
+ * يجعل أطولَ العتبتين يبتلع أقصرَهما.
+ *
+ * لماذا عمودان لا قناع بتات (bitmask) في absence_alert_level:
+ *  • لكل حدثٍ وقتُه الخاص؛ الطابع الزمني يحفظ «متى»، وهو ما تحتاجه أي إعادة
+ *    محاولة لاحقاً. القناع يقول «حدث» ولا يقول «متى» ولا «كم مرّة».
+ *  • أضفنا إلى عمودٍ حيٍّ يكتب فيه غيرنا قيمة صفر: services/staff.js
+ *    (touchActivity) وservices/leaves.js يصفّرانه. ولو حمل العمود الواحد
+ *    معنيين لاختلطا عند أي قارئ جديد، والقناع يخفي المعنى داخل رقمين.
+ *  • والعمود الإضافي أوضح للقارئ من قناعٍ لا يعرف إلا صاحبه ترميزه.
+ */
 async function checkAbsence(client) {
   for (const m of staffService.all()) {
     if (EXEMPT.includes(m.status)) continue;
@@ -39,12 +70,21 @@ async function checkAbsence(client) {
     if (leaveService.activeForUser(m.user_id).length) continue;
     if (m.status === 'probation' && m.probation_exempt) continue;
     const h = hoursSince(m.last_activity || m.joined_at);
+    // عاد إلى النشاط: انتهت حلقة الغياب، فلا عتبة ولا رسالة.
+    if (h < ABSENCE.dmHours) {
+      // الاستعلام مقصور على من تحمل العلامة فعلاً، فلا تكلفة على السليم.
+      if (m.absence_dm_sent_at) clearAbsenceMarkers(m.user_id);
+      continue;
+    }
+    const markInactive = { status: m.status === 'active' ? 'inactive' : m.status };
+    // ترتيب لا يهم مضمونه: بعد هذه النقطة نريد الاثنين أن يمرّا معاً.
+    if (!m.absence_dm_sent_at) {
+      await dm(client, m.user_id, { embeds: [embed('⏰ تنبيه غياب', `لم نرصد أي نشاط منك منذ **${Math.floor(h)}** ساعة. إذا كان لديك ظرف، قدّم طلب إجازة عبر \`/request-leave\`.`, COLORS.warning)] });
+      staffService.update(m.user_id, { absence_alert_level: 1, absence_dm_sent_at: clock.nowIso(), ...markInactive });
+    }
     if (h >= ABSENCE.staffAlertHours && m.absence_alert_level < 2) {
       await sendToChannel(client, 'staff-alerts', { embeds: [embed('🚨 غياب 96 ساعة', `<@${m.user_id}> (${m.rank}) بدون نشاط منذ **${Math.floor(h)}** ساعة.`, COLORS.danger)] });
-      staffService.update(m.user_id, { absence_alert_level: 2, status: m.status === 'active' ? 'inactive' : m.status });
-    } else if (h >= ABSENCE.dmHours && m.absence_alert_level < 1) {
-      await dm(client, m.user_id, { embeds: [embed('⏰ تنبيه غياب', `لم نرصد أي نشاط منك منذ **72 ساعة**. إذا كان لديك ظرف، قدّم طلب إجازة عبر \`/request-leave\`.`, COLORS.warning)] });
-      staffService.update(m.user_id, { absence_alert_level: 1, status: m.status === 'active' ? 'inactive' : m.status });
+      staffService.update(m.user_id, { absence_alert_level: 2, ...markInactive });
     }
   }
 }
@@ -283,20 +323,86 @@ async function processResignations(client) {
 }
 
 // ===== تذكيرات المهام والتأهيل/التسليم =====
+
+/**
+ * كم محاولة يُمنح لتذكير مهمة قبل الاستسلام.
+ *
+ * ثلاثة أيام: فشلٌ عابر (انقطاع شبكة، أو البوت متوقف يوماً) يشفي فيوم أو
+ * يومين. أما العضو الذي أغلق الرسائل الخاصة فكل محاولة نداء ميت بلا أمل،
+ * والنهاية الصحيحة أن تتوقف. والمهام من نوع onboarding/offboarding: تأهيل
+ * وتسليم، أي مهمة لا ينساها النظام.
+ */
+const TASK_REMINDER_MAX_ATTEMPTS = 3;
+
+/**
+ * إعلان الاستسلام للإدارة.
+ *
+ * تذكير onboarding مُستسلَم بصمت يعني شخصاً لا يُذكَّر ولا أحد يعرف: سقط من
+ * سجل المتابعة بلا أثر. لذلك يُكتب الاستسلام في ثلاثة مواضع: عمود المهمة
+ * (للقارئ المباشر)، هنا في قناة الإدارة، وفي سجل العمليات.
+ */
+async function announceReminderGiveUps(client, tasks) {
+  if (!tasks.length) return;
+  const lines = tasks.slice(0, 15).map(t => `• <@${t.user_id}> — **#${t.id} ${t.title}** (${t.task_type})`).join('\n');
+  await sendToChannel(client, 'staff-alerts', { embeds: [embed(`🚫 تعذّر تذكير مهام بعد ${TASK_REMINDER_MAX_ATTEMPTS} محاولات`,
+    `${lines}\n\nالعضو إما مغلق الرسائل الخاصة أو غادر السيرفر، فالتذكير أُوقف عند حدّه ولم يعد يُعاد. **تابعوا يدوياً** أو ألغوا المهمة.\n_محاولات кажд مهمة مسجّلة عليها، وفي \`/audit-log\` سطر \`task_reminder_given_up\`._`,
+    COLORS.warning)] });
+}
+
+/**
+ * تذكير المهام المتأخرة أو المستحقة غداً — بمحاولات محدودة ونهاية مرئية.
+ *
+ * كان `WHERE reminder_sent_at IS NULL` و`if (sent) UPDATE …`: وdm() في utils
+ * يبتلع كل خطأ ويعيد false، فعضو أغلق رسائله كان يعني نداءً ميتاً كل يوم الساعة
+ * 08:00 إلى الأبد، بلا عدّاد وبلا سجل يعلم أن أحداً لم يُذكَّر.
+ *
+ * المحاولة الآن تُحتسب قبل الإرسال لا بعده (وإلا فلا يُحفظ عدّاد لرسالة فشلت
+ * إرسالها أصلاً)، والاستسلام يقع عند الحدّ لا بعده، ويُعلَن.
+ */
 async function processTaskReminders(client) {
   const db = getDb();
   const cutoff = addDays(today(), 1);
   const rows = db.prepare(`SELECT * FROM staff_tasks
-    WHERE status = 'pending' AND reminder_sent_at IS NULL AND due_date IS NOT NULL
+    WHERE status = 'pending' AND reminder_sent_at IS NULL AND reminder_given_up_at IS NULL
+      AND due_date IS NOT NULL AND reminder_attempts < ?
       AND due_date <= ? AND task_type IN ('onboarding', 'offboarding')
-    ORDER BY due_date, id`).all(cutoff);
+    ORDER BY due_date, id`).all(TASK_REMINDER_MAX_ATTEMPTS, cutoff);
+  const givenUps = [];
   for (const task of rows) {
+    // العدّاد يُثبَّت أولاً: لو مات البوت بعد الإرسال، تبقى المحاولة محسوبة
+    // بدل أن نعيد إرسالها ثلاثاً إلى الأبد.
+    db.prepare("UPDATE staff_tasks SET reminder_attempts = reminder_attempts + 1, updated_at = datetime('now') WHERE id = ?").run(task.id);
     const overdue = task.due_date < today();
     const sent = await dm(client, task.user_id, { embeds: [embed(overdue ? '⚠️ مهمة متأخرة' : '⏰ تذكير بمهمة',
       `لديك المهمة **#${task.id} — ${task.title}**${overdue ? ' متأخرة عن موعدها' : ` موعدها ${kit.tsDate(task.due_date)}`}.\n\nاستخدم **/my-tasks** لمراجعتها.`, COLORS.warning)] });
-    if (sent) db.prepare("UPDATE staff_tasks SET reminder_sent_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(task.id);
+    if (sent) {
+      db.prepare("UPDATE staff_tasks SET reminder_sent_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(task.id);
+      continue;
+    }
+    if (task.reminder_attempts + 1 >= TASK_REMINDER_MAX_ATTEMPTS) {
+      db.prepare("UPDATE staff_tasks SET reminder_given_up_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(task.id);
+      givenUps.push({ ...task, reminder_attempts: task.reminder_attempts + 1 });
+      audit.record({ action: 'task_reminder_given_up', targetId: task.user_id, details: { taskId: task.id, attempts: task.reminder_attempts + 1, taskType: task.task_type } });
+    }
+  }
+  if (givenUps.length) {
+    await announceReminderGiveUps(client, givenUps);
+    logger.warn(`🚫 ${givenUps.length} مهمة توقّف تذكيرها بعد ${TASK_REMINDER_MAX_ATTEMPTS} محاولات: ${givenUps.map(t => `#${t.id}`).join('، ')}`);
   }
   return rows.length;
+}
+
+/**
+ * المهام التي استُسلم تذكيرها — يقرأها المشغّل ليعرف من لم يُذكَّر.
+ *
+ * الاستسلام حدٌّ نهائي: من بلغ له لا تُعاد المحاولة (بلا سبب ولا أمل)، ومن
+ * نجح له جملةً واضحة بلا استسلام في السجل نفسه. والشرط `reminder_sent_at IS
+ * NULL` يمنع عرض مهمة نجحت متأخرةً كأنها مُستسلَمة.
+ */
+function reminderGiveUps() {
+  return getDb().prepare(`SELECT id, user_id, title, task_type, due_date, reminder_attempts, reminder_given_up_at
+    FROM staff_tasks WHERE reminder_given_up_at IS NOT NULL AND reminder_sent_at IS NULL
+    ORDER BY reminder_given_up_at DESC, id`).all();
 }
 
 // ===== التقارير =====
@@ -493,12 +599,31 @@ function recordRun(name, startedAt, error) {
   } catch (e) { logger.warn(`تعذّر تسجيل تشغيل المهمة ${name}: ${e.message}`); }
 }
 
-/** آخر تشغيل ناجح/فاشل لكل مهمة — يُقرأ من /status */
+/** اسم المهمة الوهمية التي تحمل أعطال المخطط في status()/healthz. */
+const SCHEMA_FAULT_JOB = 'db-schema';
+
+/**
+ * آخر تشغيل ناجح/فاشل لكل مهمة + أعطال المخطط الحيّة — **جملة واحدة**.
+ *
+ * كان `GROUP BY job` ثم `SELECT * FROM job_runs WHERE id = ?` لكل مهمة: أحد
+ * عشر استعلاماً على مسار /healthz، يُعاد في كل scrape، ومقابل استعلام واحد.
+ * `id IN (SELECT MAX(id) … GROUP BY job)` هي نفس النتيجة بجملة واحدة، وUNION
+ * ALL يضيف أعطال المخطط دون أن يصير استعلاماً ثانياً.
+ *
+ * لماذا أعطال المخطط هنا: health.js يقرأ status() ويقلب الحالة إلى degraded
+ * حين يجد ok=false. وأعطال المخطط حالةٌ لازمة يجب أن تُقال على مسار الصحة —
+ * وإلا صار «البوت أقلع ناقصاً» أمراً لا يعرفه أحد. بلا أمر جديد ولا إعادة
+ * تشغيل: نفس الجملة، نفس المسار.
+ */
+const STATUS_SQL = `SELECT job, finished_at, ok, error FROM job_runs
+    WHERE id IN (SELECT MAX(id) FROM job_runs GROUP BY job)
+  UNION ALL
+  SELECT '${SCHEMA_FAULT_JOB}', detected_at, 0, step || ': ' || detail FROM schema_faults
+  ORDER BY 1`;
+
 function status() {
-  const rows = getDb().prepare(`SELECT job, MAX(id) id FROM job_runs GROUP BY job`).all();
   const last = {};
-  for (const { id } of rows) {
-    const row = getDb().prepare('SELECT * FROM job_runs WHERE id = ?').get(id);
+  for (const row of getDb().prepare(STATUS_SQL).all()) {
     last[row.job] = { finishedAt: row.finished_at, ok: !!row.ok, error: row.error };
   }
   return last;
@@ -581,4 +706,9 @@ function stop() {
   schedulerStarted = false;
 }
 
-module.exports = { start, stop, status, bootstrap, checkAbsence, liftSuspensions, processLeaves, processResignations, processTaskReminders, dailyReport, weeklyReport, monthlyReport, JOBS, JOB_TOGGLES, jobEnabled, clearRunningTasks };
+module.exports = {
+  start, stop, status, bootstrap, checkAbsence, liftSuspensions, processLeaves,
+  processResignations, processTaskReminders, dailyReport, weeklyReport, monthlyReport,
+  JOBS, JOB_TOGGLES, jobEnabled, clearRunningTasks,
+  TASK_REMINDER_MAX_ATTEMPTS, reminderGiveUps, SCHEMA_FAULT_JOB,
+};

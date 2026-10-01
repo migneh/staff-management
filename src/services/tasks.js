@@ -167,7 +167,15 @@ function listByType(taskType, { includeCompleted = false, limit = 50, userId = n
 }
 
 /**
- * إنشاء مهمة جماعية لفريق
+ * إنشاء مهمة جماعية لفريق.
+ *
+ * الشكل: صف أم واحد + صف لكل عضو من الفريق. الأم هي المهمة الجماعية نفسها،
+ * وهي الصف الذي تشير إليه mission_progress.task_id و staff_tasks.parent_task_id.
+ *
+ * mission_id في هذه الصفوف مرجع قالب فقط، لذلك يتركه الأم والأبناء فارغاً.
+ * وكل ما كتبه الكود القديم فيه هو mission_id = mission.id (رقم) في عمود من نوع
+ * TEXT، فيخزن نصاً «3.0»: لا مرجع قالب ولا مفتاح صالح. انظر
+ * migrateLegacyTeamChildren في src/database.js لترحيل الصفوف المصابة.
  */
 function createTeamMission(teamId, title, description, dueDate, assignedBy = null, tags = []) {
   const db = getDb();
@@ -189,7 +197,7 @@ function createTeamMission(teamId, title, description, dueDate, assignedBy = nul
     const teamMembers = staffService.all({ team: teamId });
 
     // تعيين المهمة لكل عضو في الفريق
-    const insert = db.prepare(`INSERT INTO staff_tasks (user_id, title, description, task_type, due_date, assigned_by, mission_id, priority, tags, team_id)
+    const insert = db.prepare(`INSERT INTO staff_tasks (user_id, title, description, task_type, due_date, assigned_by, parent_task_id, priority, tags, team_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 
     teamMembers.forEach(member => {
@@ -207,6 +215,14 @@ function createTeamMission(teamId, title, description, dueDate, assignedBy = nul
       );
     });
 
+    // سجل تقدّم لكل عضو من لحظة الإنشاء. بدون هذه الصفوف كان عدّ «من أنجز» في
+    // completeTeamMission بلا أساس: يكمّل العضو الأول فينكتب صف واحد بحالة
+    // completed، فيصير 1/1 ويُعلن اكتمال المهمة الجماعية قبل أن يبدأ البقية.
+    // و /missions progress يقرأ هذا الجدول مباشرة، وكان يعرض 0/0 إلى الأبد
+    // لأنه لم يكن له كاتب.
+    const track = db.prepare(`INSERT INTO mission_progress (task_id, team_id, user_id, status) VALUES (?, ?, ?, 'pending')`);
+    teamMembers.forEach(member => track.run(taskId, teamId, member.user_id));
+
     return taskId;
   });
 
@@ -214,40 +230,77 @@ function createTeamMission(teamId, title, description, dueDate, assignedBy = nul
 }
 
 /**
- * إكمال مهمة جماعية وتحديث التقدم
+ * إكمال مهمة جماعية وتسجيل التقدّم.
+ *
+ * `teamMissionId` هو صف المهمة الجماعية الأم (ما يرجعه createTeamMission وآخر
+ * ما يعرضه /mission team)، ويمكن أن يكون صف عضو — نرجعه إلى أمّه.
+ *
+ * الأم تُعلَّم «مكتملة» حين يكتمل جموعها فقط. الكود القديم كان يعلّمها مكتملة
+ * عند أول إكمال ثم يفحص الاكتمال في النهاية — وهي عمليتان متعارضتان على
+ * العمود نفسه.
+ *
+ * كل الكتابات داخل معاملة: استثناء في منتصفها يترك المهمة معلّمة بلا تقدّم.
  */
 function completeTeamMission(teamMissionId, userId) {
   const db = getDb();
-  
-  // إكمال المهمة الجماعية الرئيسية
-  const teamTask = db.prepare('SELECT * FROM staff_tasks WHERE id = ? AND task_type = \'mission\' AND team_id IS NOT NULL').get(teamMissionId);
-  if (!teamTask) return null;
-  
-  db.prepare("UPDATE staff_tasks SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?")
-    .run(nowIso(), nowIso(), teamMissionId);
-    
-  // إنشاء أو تحديث سجل التقدم
-  const existingProgress = db.prepare('SELECT * FROM mission_progress WHERE mission_id = ? AND user_id = ?').get(teamTask.mission_id, userId);
-  if (existingProgress) {
-    db.prepare('UPDATE mission_progress SET status = \'completed\', completed_at = ? WHERE mission_id = ? AND user_id = ?')
-      .run(nowIso(), teamTask.mission_id, userId);
-  } else {
-    db.prepare('INSERT INTO mission_progress (mission_id, team_id, user_id, status, completed_at) VALUES (?, ?, ?, \'completed\', ?)')
-      .run(teamTask.mission_id, teamTask.team_id, userId, nowIso());
-  }
-  
-  // فحص إكتمال المهمة الجماعية
-  const completedCount = db.prepare('SELECT COUNT(*) c FROM mission_progress WHERE mission_id = ? AND status = \'completed\'').get(teamTask.mission_id).c;
-  const totalAssigned = db.prepare('SELECT COUNT(*) c FROM mission_progress WHERE mission_id = ?').get(teamTask.mission_id).c;
-  
-  if (completedCount === totalAssigned && totalAssigned > 0) {
-    // مهمة جماعية مكتملة بالكامل
-    db.prepare("UPDATE staff_tasks SET status = 'completed', completed_at = ? WHERE id = ?")
-      .run(nowIso(), teamMissionId);
-    return { task: get(teamMissionId), missionCompleted: true };
-  }
-  
-  return { task: get(teamMissionId), missionCompleted: false };
+
+  const requested = db.prepare('SELECT * FROM staff_tasks WHERE id = ? AND task_type = \'mission\' AND team_id IS NOT NULL').get(Number(teamMissionId));
+  if (!requested) return null;
+  // الأم هي التي تحمل user_id الوهمي؛ إن أُمر بصف عضو نرجعه إلى أمّه.
+  const parentId = requested.user_id.startsWith('team:')
+    ? requested.id
+    : (requested.parent_task_id || requested.id);
+
+  const teamTask = db.prepare('SELECT * FROM staff_tasks WHERE id = ?').get(parentId);
+  const stamp = nowIso();
+
+  const run = db.transaction(() => {
+    const existing = db.prepare('SELECT id FROM mission_progress WHERE task_id = ? AND user_id = ?').get(parentId, userId);
+    if (existing) {
+      db.prepare('UPDATE mission_progress SET status = \'completed\', completed_at = ? WHERE id = ?').run(stamp, existing.id);
+    } else {
+      // لا سجل إسناد لهذا العضو. إن كان للمهمة كشف أعضاء فليس واحد منهم، فلا
+      // نضيفه: صف واحد زائد يطفئ عدّ الجموع ويعلن اكتمال مهمة لم تكتمل.
+      // وإن لم يكن هناك كشف أصلاً (مهمة أُنشئت قبل هذا الربط) فنسجّلها.
+      const assigned = db.prepare('SELECT COUNT(*) c FROM mission_progress WHERE task_id = ?').get(parentId).c;
+      if (assigned > 0) return { recorded: false, missionCompleted: false };
+      db.prepare('INSERT INTO mission_progress (task_id, team_id, user_id, status, completed_at) VALUES (?, ?, ?, \'completed\', ?)')
+        .run(parentId, teamTask.team_id, userId, stamp);
+    }
+
+    // الإكمال لا يُعلن إلا على جموع الفريق كله.
+    const completedCount = db.prepare('SELECT COUNT(*) c FROM mission_progress WHERE task_id = ? AND status = \'completed\'').get(parentId).c;
+    const totalAssigned = db.prepare('SELECT COUNT(*) c FROM mission_progress WHERE task_id = ?').get(parentId).c;
+    const missionCompleted = totalAssigned > 0 && completedCount === totalAssigned;
+    if (missionCompleted) {
+      db.prepare("UPDATE staff_tasks SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?")
+        .run(stamp, stamp, parentId);
+    }
+    return { recorded: true, missionCompleted };
+  });
+
+  const outcome = run();
+  return { task: get(parentId), missionCompleted: outcome.missionCompleted, recorded: outcome.recorded };
+}
+
+/**
+ * تسجيل تقدّم عضو في المهمة الجماعية الأم عند إنهائه المهمة المفردة عليه.
+ *
+ * هذا هو المسار القابل للوصول فعلاً: الزر mission:complete يستدعي complete() لا
+ * completeTeamMission. بدون هذا الربط تبقى صفوف التقدّم المعلّقة عند 'pending'
+ * إلى الأبد، ويعرض /missions progress نسبة 0% مهما اكتمل كل شيء.
+ *
+ * لا يفعل شيئاً لغير المهام الجماعية: parent_task_id لا يكتبه إلا
+ * createTeamMission، ومهمة القالب تُنهي نفسها بنفسها ولا صف لها أصلاً.
+ */
+function recordTeamMissionProgress(db, task, userId, stamp) {
+  if (task.parent_task_id === null || task.parent_task_id === undefined) return;
+  const done = db.prepare(`UPDATE mission_progress SET status = 'completed', completed_at = ? WHERE task_id = ? AND user_id = ?`)
+    .run(stamp, task.parent_task_id, userId);
+  if (done.changes) return;
+  // مهمة جماعية أُنشئت قبل أن يُكتب سجل التقدّم — نُنشئ الصف بدل أن نفقد الإنجاز.
+  db.prepare(`INSERT INTO mission_progress (task_id, team_id, user_id, status, completed_at) VALUES (?, ?, ?, 'completed', ?)`)
+    .run(task.parent_task_id, task.team_id, userId, stamp);
 }
 
 /**
@@ -314,12 +367,17 @@ function complete(id, userId) {
   const db = getDb();
   const task = db.prepare("SELECT * FROM staff_tasks WHERE id = ? AND user_id = ? AND status = 'pending'").get(Number(id), userId);
   if (!task) return null;
-  db.prepare("UPDATE staff_tasks SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?")
-    .run(nowIso(), nowIso(), task.id);
-  if (task.task_type === 'onboarding') {
-    const remaining = db.prepare("SELECT COUNT(*) c FROM staff_tasks WHERE user_id = ? AND task_type = 'onboarding' AND status = 'pending'").get(userId).c;
-    if (!remaining) db.prepare("UPDATE staff_members SET onboarding_ready = 1, updated_at = ? WHERE user_id = ?").run(nowIso(), userId);
-  }
+  const stamp = nowIso();
+  const run = db.transaction(() => {
+    db.prepare("UPDATE staff_tasks SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?")
+      .run(stamp, stamp, task.id);
+    if (task.task_type === 'onboarding') {
+      const remaining = db.prepare("SELECT COUNT(*) c FROM staff_tasks WHERE user_id = ? AND task_type = 'onboarding' AND status = 'pending'").get(userId).c;
+      if (!remaining) db.prepare("UPDATE staff_members SET onboarding_ready = 1, updated_at = ? WHERE user_id = ?").run(stamp, userId);
+    }
+    recordTeamMissionProgress(db, task, userId, stamp);
+  });
+  run();
   return get(task.id);
 }
 

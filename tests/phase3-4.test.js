@@ -74,7 +74,16 @@ describe('المرحلة 3 — شفافية وتقارير العمل', () => {
     const result = getDb().prepare('INSERT INTO recognition_nominations (nominator_id, target_id, reason, day) VALUES (?, ?, ?, ?)').run('nominator', 'winner', 'حل مشكلة صعبة', clock.today());
     const client = { users: { fetch: async () => ({ send: async () => {} }) } };
     // reply مطلوب لأن الاعتماد مرّ تكراراً والثاني يردّ نتيجة لا تُحدّث الرسالة.
-    const interaction = { user: { id: 'manager' }, channelId: 'review', client, update: async () => {}, reply: async () => {} };
+    // deferUpdate/editReply/followUp: decide يؤجّل قبل النشر في staff-wins ثم ينهي
+    // بـ editReply، وثاني نداء يقع على حارس «تمت مراجعته» فيصير followUp لأن
+    // التفاعل صار مُقرَّراً. البصمة الناقصة كانت تُسقط الاختبار بـ TypeError
+    // لا بفشل سلوك.
+    const interaction = {
+      user: { id: 'manager' }, channelId: 'review', client,
+      update: async () => {}, reply: async () => {}, followUp: async () => {},
+      async deferUpdate() { this.replied = true; this.deferred = true; },
+      async editReply() { assert(this.replied, 'editReply بلا تأجيل'); },
+    };
     await recognition.components['recognition:approve'](interaction, [String(result.lastInsertRowid)]);
     const nomination = getDb().prepare('SELECT * FROM recognition_nominations WHERE id = ?').get(result.lastInsertRowid);
     assert.equal(nomination.status, 'approved');

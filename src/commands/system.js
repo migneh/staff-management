@@ -6,7 +6,7 @@ const backup = require('../services/backup');
 const settings = require('../services/settings');
 const clock = require('../clock');
 const retention = require('../services/retention');
-const { getDb } = require('../database');
+const { getDb, schemaFaults } = require('../database');
 const { embed, COLORS, divider, arDigits, replyEphemeral } = require('../utils');
 const kit = require('../ui/kit');
 
@@ -50,6 +50,10 @@ module.exports = {
         const rolledMonths = new Set(db.prepare('SELECT DISTINCT month FROM activity_monthly').all().map(r => r.month)).size;
         const lastBackup = backup.listBackups()[0];
         const st = settings.status();
+        // أعطال المخطط الحيّة: البوت قد يقلع في وضع متدهور عمداً (انظر
+        // schema_faults في database.js)، فيجب أن يراها المشغّل هنا لا في
+        // سجلّ journals فقط — /healthz يعيد 503 لكنه لا يصل إلى عينه.
+        const faults = schemaFaults(db);
 
         // Database size status
         let sizeStatus = '🟢 طبيعي';
@@ -96,6 +100,8 @@ module.exports = {
                 saved_reports: '📊 تقارير محفوظة',
                 support_ratings: '⭐ تقييمات الدعم',
                 mod_actions: '🛡️ إجراءات إشرافية',
+                schema_version: '🧬 نسخة المخطط',
+                schema_faults: '🛑 أعطال المخطط',
                 faq_entries: '📚 مدخلات قاعدة المعرفة',
                 faq_templates: '🗂️ قوالب المعرفة',
                 faq_panels: '📋 لوحات المعرفة',
@@ -132,8 +138,17 @@ module.exports = {
         e.addFields(
           { name: '💾 آخر نسخة احتياطية', value: lastBackup ? `${kit.tsRelative(lastBackup.modifiedAt)} · ${(lastBackup.size / 1024 / 1024).toFixed(2)} م.ب${lastCheckText ? `\n${lastCheckText}` : ''}` : 'لا توجد — شغّل `/backup`', inline: true },
           { name: '⚙️ الإعداد', value: `رتب ${st.rolesDone}/${st.rolesTotal} • قنوات ${st.channelsDone}/${st.channelsTotal}`, inline: true },
-        )
-        .setFooter({ text: `المنطقة الزمنية: ${clock.TZ} • آخر تحديث` });
+        );
+
+        if (faults.length) {
+          e.addFields({
+            name: '🗄️ سلامة المخطط',
+            value: faults.slice(0, 3).map(f => `🔴 **${f.step}** (${f.kind === 'data' ? 'بيانات' : 'عطل'})\n${String(f.detail).slice(0, 200)}`).join('\n\n')
+              + (faults.length > 3 ? `\n\n… و${faults.length - 3} عطلاً آخر` : ''),
+            inline: false,
+          });
+        }
+        e.setFooter({ text: `المنطقة الزمنية: ${clock.TZ} • آخر تحديث` });
         return i.reply({ embeds: [e], ephemeral: true });
       },
     },
