@@ -5,7 +5,9 @@ const retention = require('./services/retention');
 
 function authOk(req) {
   const expected = process.env.HEALTH_TOKEN;
-  if (!expected) return true;
+  // نرفض عند غياب التوكن: /metrics يكشف مسار قاعدة البيانات وأحجام النسخ وعمرها.
+  // الحارس كان `return true` — أي أن .env الفارغ كان يفتح المنفذ بلا مصادقة.
+  if (!expected) return false;
   return req.headers.authorization === `Bearer ${expected}`;
 }
 

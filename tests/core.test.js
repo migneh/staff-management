@@ -280,6 +280,8 @@ describe('استيراد سجل التكتات الخارجي', () => {
     const settings = require('../src/services/settings');
     const ticketLogs = require('../src/services/ticketLogs');
     settings.setChannel('ticket-source-logs', '999');
+    // البوت الخارجي مقيّد بمعرّفه: لازم نثبّته صراحةً حتى لا يتسرّب من config.json.
+    settings.setTicketLogBotId('777');
     const message = {
       id: '123456789012345678',
       url: 'https://discord.com/channels/g/c/m',
@@ -293,7 +295,8 @@ describe('استيراد سجل التكتات الخارجي', () => {
     assert.equal(parsed.closer, '1442619466973980735');
     const first = ticketLogs.recordTicket(parsed);
     assert.equal(first.duplicate, false);
-    assert.equal(first.earned, 2);
+    // لا سجل نقاط بعد: التستدعاء يسجّل القياس فقط ويمنع التكرار بمصدره.
+    assert.equal(first.earned, undefined);
     // المدة تُحلل إلى دقائق ولو جاءت بصيغة ساعة:دقيقة
     assert.equal(ticketLogs.parseDuration('01:23'), 83);
     assert.equal(ticketLogs.parseDuration('00:07:30'), 8);

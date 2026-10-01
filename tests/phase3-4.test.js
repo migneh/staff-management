@@ -9,7 +9,7 @@ const score = require('../src/services/score');
 const load = require('../src/services/load');
 const reports = require('../src/services/reports');
 const settings = require('../src/services/settings');
-const points = require('../src/services/points');
+const clock = require('../src/clock');
 const taskService = require('../src/services/tasks');
 const scheduler = require('../src/scheduler');
 const recognition = require('../src/commands/recognition');
@@ -68,23 +68,26 @@ describe('المرحلة 3 — شفافية وتقارير العمل', () => {
     assert.deepEqual(taskService.listByType('offboarding').map(t => t.due_date), tasks.map(() => '2026-09-30'));
   });
 
-  test('يعتمد ترشيح التقدير ويمنح نقاطه مرة واحدة', async () => {
+  test('يعتمد ترشيح التقدير مرة واحدة ولا يمنح نقاطاً (نظام النقاط أُزيل)', async () => {
     seedStaff('nominator', 'support', 'Support');
     seedStaff('winner', 'support', 'Support');
-    const result = getDb().prepare('INSERT INTO recognition_nominations (nominator_id, target_id, reason) VALUES (?, ?, ?)').run('nominator', 'winner', 'حل مشكلة صعبة');
+    const result = getDb().prepare('INSERT INTO recognition_nominations (nominator_id, target_id, reason, day) VALUES (?, ?, ?, ?)').run('nominator', 'winner', 'حل مشكلة صعبة', clock.today());
     const client = { users: { fetch: async () => ({ send: async () => {} }) } };
-    const interaction = { user: { id: 'manager' }, channelId: 'review', client, update: async () => {} };
+    // reply مطلوب لأن الاعتماد مرّ تكراراً والثاني يردّ نتيجة لا تُحدّث الرسالة.
+    const interaction = { user: { id: 'manager' }, channelId: 'review', client, update: async () => {}, reply: async () => {} };
     await recognition.components['recognition:approve'](interaction, [String(result.lastInsertRowid)]);
     const nomination = getDb().prepare('SELECT * FROM recognition_nominations WHERE id = ?').get(result.lastInsertRowid);
     assert.equal(nomination.status, 'approved');
-    assert.equal(nomination.points_awarded, 5);
-    assert.equal(getDb().prepare("SELECT SUM(points) total FROM promotion_points WHERE user_id = 'winner'").get().total, 5);
+    // الاعتماد لا يكتب نقاطاً إطلاقاً — لا دفتر ولا عمود. يبقى points_awarded صفراً دائماً.
+    assert.equal(nomination.points_awarded, 0);
+    // الاعتماد الثاني لا يفعل شيئاً: الحالة لا تعود إلى pending.
+    await recognition.components['recognition:approve'](interaction, [String(result.lastInsertRowid)]);
+    assert.equal(getDb().prepare('SELECT COUNT(*) c FROM recognition_nominations WHERE id = ? AND reviewed_by = ?').get(result.lastInsertRowid, 'manager').c, 1);
   });
 
-  test('يقبل استئناف الإنذار ويلغي أثره من العد والنقاط', async () => {
+  test('يقبل استئناف الإنذار ويلغي أثره من العد', async () => {
     seedStaff('warned', 'moderation', 'Moderator');
     const warning = getDb().prepare('INSERT INTO warnings (user_id, warning_type, reason, issued_by) VALUES (?, ?, ?, ?)').run('warned', 'formal', 'سبب', 'manager');
-    const ledger = points.add('warned', 'formal_warning', 'moderation', { refType: 'warning', refId: warning.lastInsertRowid, addedBy: 'manager' });
     const appeal = getDb().prepare('INSERT INTO warning_appeals (warning_id, user_id, reason) VALUES (?, ?, ?)').run(warning.lastInsertRowid, 'warned', 'لدي دليل');
     const client = { users: { fetch: async () => ({ send: async () => {} }) } };
     const interaction = { user: { id: 'manager-2' }, channelId: 'review', client, update: async () => {} };
@@ -93,21 +96,8 @@ describe('المرحلة 3 — شفافية وتقارير العمل', () => {
     const reviewed = getDb().prepare('SELECT * FROM warning_appeals WHERE id = ?').get(appeal.lastInsertRowid);
     assert.ok(row.voided_at);
     assert.equal(reviewed.status, 'approved');
+    // الإنذار الملغى لا يُحتسب في Score — وهذا أثره الفعلي بعد إزالة نظام النقاط.
     assert.equal(score.monthlyRaw('warned').warnings, 0);
-    assert.equal(points.total('warned'), ledger + (-ledger));
-  });
-
-  test('يحفظ اعتراض النقاط كمهمة إدارة ولا يظهر كمهمة عادية للعضو', () => {
-    seedStaff('appeal', 'support', 'Support');
-    const point = points.add('appeal', 'ticket_closed', 'support', { refType: 'ticket', refId: 'T-1', addedBy: 'manager' });
-    assert.equal(point, 2);
-    const history = points.history('appeal', 10);
-    assert.equal(history[0].reason_key, 'ticket_closed');
-    const task = taskService.create({ userId: 'appeal', title: 'اعتراض على حركة النقاط #1', description: 'سبب', taskType: 'points_appeal', assignedBy: 'appeal' });
-    assert.equal(taskService.listByType('points_appeal').length, 1);
-    assert.equal(taskService.pendingCount('appeal'), 0);
-    assert.equal(taskService.list('appeal').length, 0);
-    assert.equal(taskService.complete(task.id, 'appeal'), null);
   });
 
   test('يحسب حمل الفريق من التكتات والإجراءات ويستبعد التجربة', () => {

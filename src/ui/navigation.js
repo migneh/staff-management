@@ -24,7 +24,13 @@ const GROUPS = {
    promotion: ['promotion-status', 'request-promotion', 'promotion-info'],
    system: ['setup', 'system-status', 'backup', 'backup-list', 'maintenance'],
 };
-const PERSONAL = new Set([...GROUPS.requests, 'my-tasks', 'promotion-status', 'request-promotion']);
+// PERSONAL = أوامر لا معنى لها لمن بلا فريق (مالك السيرفر مثلاً): لا مهام له ولا إجازات.
+// `me` و`my-record` و`my-performance` كانت غائبة، فيرى مالك السيرفر أوامر لا تخصّه.
+const PERSONAL = new Set([
+  ...GROUPS.requests,
+  'my-tasks', 'promotion-status', 'request-promotion',
+  'me', 'my-record', 'my-performance',
+]);
 // اختصارات يومية مباشرة؛ بقية الأوامر تمر بمعالج خيارات ومراجعة قبل التنفيذ.
 const QUICK_ACTIONS = {
    'my-ratings': 'تقييمات العملاء', me: 'لوحتي الشخصية', 'my-tasks': 'مهامي', faq: 'تصفح المعرفة', 'faq-list': 'قائمة التعليمات',

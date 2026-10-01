@@ -19,14 +19,25 @@ function accessContext(i) {
 
 function commandAccessError(command, context) {
   if (!command) return 'هذا الإجراء لم يعد متاحاً. افتح /help لاختيار إجراء آخر.';
-  if (command.adminOnly) return context.admin ? null : 'الإعداد متاح لمن يملك صلاحية **Administrator** فقط.';
+  if (command.adminOnly && !context.admin) return 'الإعداد متاح لمن يملك صلاحية **Administrator** فقط.';
+  if (command.adminOnly) return null;
   if (command.serverManagerOnly && !context.serverManager) return 'هذا الأمر متاح لـ **Server Manager** أو **General Manager** الحالي فقط.';
   const level = context.level || (context.serverManager ? LEVELS.GENERAL_MANAGER : 0);
   if (level < (command.level || 0)) return `هذا الأمر متاح لـ **${LEVEL_LABELS[command.level] || 'إدارة أعلى'}**.`;
-  if (command.maxLevel && level > command.maxLevel) return 'هذا الأمر غير متاح لرتبتك.';
+  // `maxLevel: 0` تعني «لا أحد دون GM». الفحص القديم `command.maxLevel &&` كان
+  // يبتلع الصفر لأنه falsy — فيحصل ذلك الأمر بلا حدّ أعلى إطلاقاً.
+  if (command.maxLevel != null && level > command.maxLevel) return 'هذا الأمر غير متاح لرتبتك.';
   if (command.team && context.team !== command.team) return `هذا الأمر خاص بـ **${TEAMS[command.team]}**.`;
   if (context.suspended && !SUSPENDED_ALLOWED.has(command.data.name)) return 'حسابك الإداري موقوف حالياً. يمكنك مراجعة سجلك من /my-record.';
   return null;
 }
 
-module.exports = { accessContext, commandAccessError };
+/**
+ * قائمة البادئات المسموح بها لموقوف — مصدر واحد بدل regex في componentDispatch.
+ * كل بادئة تكتب هنا يجب أن تُختبر: mutating جديد بلا اسم هنا = تسريب صلاحية.
+ */
+const SUSPENDED_ALLOWED_COMPONENT_PREFIXES = [
+  'ticket:', 'modaction:', 'leave:modal', 'leave:extendmodal', 'promo:modal',
+];
+
+module.exports = { accessContext, commandAccessError, SUSPENDED_ALLOWED, SUSPENDED_ALLOWED_COMPONENT_PREFIXES };

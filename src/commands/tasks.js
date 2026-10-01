@@ -111,8 +111,10 @@ module.exports = {
         .addStringOption(o => o.setName('title').setDescription('عنوان المهمة').setRequired(true).setMaxLength(100))
         .addStringOption(o => o.setName('description').setDescription('تفاصيل المهمة').setRequired(false).setMaxLength(500))
         .addStringOption(o => o.setName('due').setDescription('آخر موعد YYYY-MM-DD — اختياري').setRequired(false).setMaxLength(10))
+        // 'mission' ليس هنا: المهام الجماعية تُنشأ عبر /missions وتكتب mission_id بنفسها.
+        // إدراجه هنا ينتج مهمة بلا أب، فلا تُدرج في تقدّم أي مهمة ولا في عملياتها.
         .addStringOption(o => o.setName('type').setDescription('نوع المهمة').setRequired(false).addChoices(
-          { name: 'عامة', value: 'general' }, { name: 'متابعة', value: 'follow_up' }, { name: 'تأهيل', value: 'onboarding' }, { name: 'مهمة', value: 'mission' }))
+          { name: 'عامة', value: 'general' }, { name: 'متابعة', value: 'follow_up' }, { name: 'تأهيل', value: 'onboarding' }))
         .addStringOption(o => o.setName('priority').setDescription('أولوية المهمة').setRequired(false).addChoices(
           { name: 'منخفضة', value: 'low' }, { name: 'عادية', value: 'normal' }, { name: 'عالية', value: 'high' }, { name: 'عاجلة', value: 'urgent' })),
       level: LEVELS.MANAGEMENT,

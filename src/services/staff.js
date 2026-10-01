@@ -106,13 +106,45 @@ function touchActivity(userId) {
 
 const REMOVAL_TYPES = ['remove', 'left_guild'];
 
+/**
+ * كتابة سطر واحد في تاريخ الرتب — المصدر الموحّد لكل تغيير رتبة أو عضوية،
+ * حتى تعكس المغادرة والإزالة في السجل نفسه الذي تعرضه /staff-record.
+ */
+function appendRankChange({ userId, team, fromRank, toRank = null, changeType, reason = null, actorId = null }) {
+  getDb().prepare(`INSERT INTO staff_rank_history (user_id, team, from_rank, to_rank, change_type, reason, actor_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(userId, team, fromRank, toRank, changeType, reason, actorId);
+}
+
+/** تاريخ تغييرات الرتبة — الأحدث أولاً. الأساس الذي تعتمد عليه /staff-record و/my-record. */
+function rankHistory(userId, limit = 20) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 200);
+  return getDb().prepare(`SELECT * FROM staff_rank_history WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`)
+    .all(userId, safeLimit);
+}
+
 /** تغيير رتبة العضو مع تحديث الحالة والتاريخ */
 function setRank(userId, team, rank, { actorId = null, reason = null, changeType = null } = {}) {
   const before = get(userId);
   const fromRank = before?.rank || null;
   const type = changeType || (before && fromRank !== rank ? (rankIndexOf(team, rank) >= rankIndexOf(before.team, fromRank) ? 'promote' : 'demote') : 'reassign');
-  getDb().prepare(`UPDATE staff_members SET team = ?, rank = ?, rank_since = ?, status = 'active', updated_at = ? WHERE user_id = ?`)
-    .run(team, rank, nowIso(), nowIso(), userId);
+
+  // السجل والتحديث في معاملة واحدة: لا رتبة جديدة بلا سند موثّق، ولا سند بلا تغيّر.
+  const db = getDb();
+  const applied = db.transaction(() => {
+    db.prepare(`UPDATE staff_members SET team = ?, rank = ?, rank_since = ?, status = 'active', updated_at = ? WHERE user_id = ?`)
+      .run(team, rank, nowIso(), nowIso(), userId);
+    appendRankChange({ userId, team, fromRank, toRank: rank, changeType: type, reason, actorId });
+  });
+  applied();
+
+  try {
+    require('./audit').record({
+      action: 'rank_changed', actorId, targetId: userId,
+      details: { from: fromRank, to: rank, team, changeType: type, reason },
+    });
+  } catch { /* لا يُسقط ترقية مسجّلة بسبب فشل التدقيق */ }
+
   return { fromRank, toRank: rank, changeType: type };
 }
 
@@ -203,7 +235,17 @@ function syncDeparture(member) {
   // احتفظ بحالة "بإجازة" الصريحة، ونزع البقية إلى "خرج من السيرفر"
   const next = existing.status === 'on_leave' ? 'on_leave' : 'removed';
   if (next === existing.status) return null;
-  setStatus(member.id, next);
+  // نزع الرتب تغيير في العضوية لا في الرتبة، لكنه يُوثَّق في السجل نفسه كي لا
+  // يظهر العضو بلا أثر لما جرى له.
+  const db = getDb();
+  db.transaction(() => {
+    db.prepare('UPDATE staff_members SET status = ?, updated_at = ? WHERE user_id = ?')
+      .run(next, nowIso(), member.id);
+    appendRankChange({
+      userId: member.id, team: existing.team, fromRank: existing.rank,
+      changeType: 'remove', reason: 'نُزعت الرتب الإدارية (إزالة من الفريق)',
+    });
+  })();
   return { previous: existing.status, next, rank: existing.rank, team: existing.team };
 }
 
@@ -211,12 +253,20 @@ function syncDeparture(member) {
 function markLeft(userId) {
   const existing = get(userId);
   if (!existing || ['resigned', 'removed'].includes(existing.status)) return null;
-  setStatus(userId, 'removed');
-  return { previous: existing.status, rank: existing.rank, team: existing.team };
+  const db = getDb();
+  db.transaction(() => {
+    db.prepare('UPDATE staff_members SET status = ?, updated_at = ? WHERE user_id = ?')
+      .run('removed', nowIso(), userId);
+    appendRankChange({
+      userId, team: existing.team, fromRank: existing.rank,
+      changeType: 'left_guild', reason: 'غادر السيرفر',
+    });
+  })();
+  return { previous: existing.status, next: 'removed', rank: existing.rank, team: existing.team };
 }
 
 module.exports = {
-  get, all, ensure, setStatus, update, touchActivity, setRank, REMOVAL_TYPES,
+  get, all, ensure, setStatus, update, touchActivity, setRank, rankHistory, REMOVAL_TYPES,
   applyRankRoles, removeTeamRoles, removeAllStaffRoles,
   vacationRole, addVacationRole, removeVacationRole,
   suspend, unsuspend, liftExpiredSuspensions, suspensionEnd,

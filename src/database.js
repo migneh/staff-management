@@ -207,6 +207,25 @@ CREATE TABLE IF NOT EXISTS warning_appeals (
 );
 CREATE INDEX IF NOT EXISTS idx_warning_appeals_status ON warning_appeals(status, created_at);
 
+-- ترشيحات تقدير الزملاء. الترشيح صفٌّ لا MORE: يكتب المُرشِّح والمُرشَّح والسبب
+-- ويوم الترشيح فقط. لا إعلان ولا إشعار عند INSERT — ذلك كله في recognition:approve.
+-- عمود day يُخزَّن بتوقيت السيرفر (clock.today) لأن created_at مخزَّن UTC،
+-- فمقارنة date(created_at) بـ clock.today() تكون خاطئة طوال جزء من كل يوم.
+CREATE TABLE IF NOT EXISTS recognition_nominations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  nominator_id TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  day TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',      -- pending | approved | rejected
+  points_awarded INTEGER NOT NULL DEFAULT 0,  -- مُهمَل: نظام النقاط أُزيل، ويبقى 0 دائماً
+  reviewed_by TEXT,
+  reviewed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_recognition_nominator_day ON recognition_nominations(nominator_id, day);
+CREATE INDEX IF NOT EXISTS idx_recognition_status ON recognition_nominations(status, id);
+
 CREATE TABLE IF NOT EXISTS staff_notes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id TEXT NOT NULL,
