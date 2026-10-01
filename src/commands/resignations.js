@@ -76,6 +76,12 @@ async function decide(i, id, status) {
   if (!r || !['pending', 'on_hold'].includes(r.status)) return replyEphemeral(i, '❌ الطلب غير موجود أو تمت مراجعته.', COLORS.danger);
   // منع اتخاذ قرار على استقالة نفسك — حتى Boss لا يمكنه قبول/رفض استقالته الخاصة.
   if (r.user_id === i.user.id) return replyEphemeral(i, '❌ لا يمكنك اتخاذ قرار بشأن طلب استقالتك الخاص. يجب أن يراجعه إداري آخر.', COLORS.danger);
+  // decide() يخدم ثلاث نماذج (قبول/رفض/تعليق) وكلها modal submit بلا رسالة
+  // مصدر، فالتأجيل الصحيح deferReply لا deferUpdate. بعده سلسلة شبكية طويلة:
+  // members.fetch ثم إزالة الرتب الإدارية ثم رتبة الإجازة ثم تعديل رسالة
+  // الطلب ثم خاص العضو ثم السجل. لو تُرك أيٌّ منها قبل الإقرار، يرى المراجع
+  // «فشل التفاعل» بعد أن حُذفت رتب العضو فعلياً.
+  await i.deferReply();
   const reason = i.fields ? (forms.combine(i) || null) : null;
   const exitInterview = i.fields && i.fields.fields?.has?.('exit_interview') ? (i.fields.getTextInputValue('exit_interview') || '').trim() || null : null;
 
@@ -90,7 +96,7 @@ async function decide(i, id, status) {
     color = COLORS.success;
     const before = staffService.get(r.user_id);
     staffService.setStatus(r.user_id, 'resigned');
-    if (before) staffService.recordRankChange(r.user_id, { fromRank: before.rank, toRank: before.rank, team: before.team, changeType: 'remove', reason: `قبول استقالة${reason ? ` — ${reason}` : ''}`, actorId: i.user.id });
+    if (before) staffService.appendRankChange({ userId: r.user_id, fromRank: before.rank, toRank: before.rank, team: before.team, changeType: 'remove', reason: `قبول استقالة${reason ? ` — ${reason}` : ''}`, actorId: i.user.id });
     const removeAt = r.remove_roles_at;
     const shouldRemoveNow = !removeAt || removeAt <= today();
     db.prepare(`UPDATE leave_requests SET status = 'cancelled', cancelled_by = ?, cancelled_at = datetime('now'), cancel_reason = 'إلغاء تلقائي بسبب قبول الاستقالة', end_reason='resignation' WHERE user_id = ? AND status IN ('pending', 'approved')`).run(i.user.id, r.user_id);
@@ -129,8 +135,11 @@ async function decide(i, id, status) {
 
   const updated = db.prepare('SELECT * FROM resignations WHERE id = ?').get(r.id);
   await updateRequestMessage(i.client, updated, color);
-  if (i.isModalSubmit()) await replyEphemeral(i, `تم تحديث الطلب #${r.id} → ${STATUS_AR[status]}`, color);
-  else if (!i.replied && !i.deferred) await i.update({ content: null, embeds: [resignEmbed(updated, color)], components: status === 'on_hold' ? [reviewRow(r.id)] : [] });
+  // بعد deferReply لا يصلح update ولا reply — التفاعل مُقرَّر. الفحص
+  // `!i.replied && !i.deferred` كان يتخطّى الردّ كلياً بعد التأجيل (فيبقى
+  // التفاعل بلا جواب)، فصار كل فرعٍ من الفرعين يُعدِّل الرسالة المؤجلة.
+  if (i.isModalSubmit()) await i.editReply({ embeds: [embed(null, `تم تحديث الطلب #${r.id} → ${STATUS_AR[status]}`, color)], allowedMentions: { parse: [] } });
+  else await i.editReply({ content: null, embeds: [resignEmbed(updated, color)], components: status === 'on_hold' ? [reviewRow(r.id)] : [] });
   await dm(i.client, r.user_id, { embeds: [dmEmbed] });
   if (status === 'accepted' && updated.remove_roles_at && updated.remove_roles_at > today()) {
     dmEmbed.addFields && null;
@@ -390,10 +399,13 @@ module.exports = {
       const db = getDb();
       const r = db.prepare("SELECT * FROM resignations WHERE id=? AND user_id=? AND status IN ('pending','on_hold')").get(Number(id), i.user.id);
       if (!r) return replyEphemeral(i, '❌ الطلب غير موجود.', COLORS.danger);
+      // تعديل رسالة الطلب في القناة عملية شبكية (channels.fetch + messages.fetch
+      // + edit)، والسحب قد كُتب قبلها — نؤجل كي لا يرى العضو «فشل التفاعل».
+      await i.deferUpdate();
       db.prepare(`UPDATE resignations SET status='withdrawn', withdrawn_by=?, withdrawn_at=datetime('now'), withdraw_reason='سحب من القائمة' WHERE id=?`).run(i.user.id, r.id);
       await updateRequestMessage(i.client, db.prepare('SELECT * FROM resignations WHERE id=?').get(r.id), COLORS.gray);
       audit.record({ action: 'resignation_withdrawn', actorId: i.user.id, targetId: i.user.id, details: { requestId: r.id }, channelId: i.channelId });
-      return i.update({ embeds: [embed('✅ تم السحب', `سُحب الطلب **#${id}**.`, COLORS.success)], components: [] });
+      return i.editReply({ embeds: [embed('✅ تم السحب', `سُحب الطلب **#${id}**.`, COLORS.success)], components: [] });
     },
     'resign:cancelwithdraw': async (i) => i.update({ embeds: [embed(null, 'تم الإلغاء.', COLORS.gray)], components: [] }),
     'resign:withdrawlist': async (i, [page]) => {
@@ -435,12 +447,15 @@ module.exports = {
       const block = selfReviewBlock(i, target);
       if (block) return replyEphemeral(i, block, COLORS.danger);
       const text = i.fields.getTextInputValue('exit_interview').trim();
+      // modal submit بلا رسالة مصدر ⇒ deferReply. بعده تعديل رسالة الطلب ثم
+      // إرسال الخاص للعضو — عمليتان شبكيتان متسلسلتان قبل أي رد.
+      await i.deferReply();
       getDb().prepare('UPDATE resignations SET exit_interview=? WHERE id=?').run(text, Number(id));
       const updated = getDb().prepare('SELECT * FROM resignations WHERE id=?').get(Number(id));
       await updateRequestMessage(i.client, updated);
       audit.record({ action: 'resignation_interview', actorId: i.user.id, targetId: updated.user_id, details: { requestId: updated.id }, channelId: i.channelId });
       await dm(i.client, updated.user_id, { embeds: [embed('📝 مقابلة خروج', text, COLORS.info)] });
-      return replyEphemeral(i, `✅ تم حفظ مقابلة الخروج للطلب #${id}.`, COLORS.success);
+      return i.editReply({ embeds: [embed(null, `✅ تم حفظ مقابلة الخروج للطلب #${id}.`, COLORS.success)], allowedMentions: { parse: [] } });
     },
   },
 };

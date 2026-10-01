@@ -173,11 +173,15 @@ const NOTE_TYPES = {
   positive: { label: 'ملاحظة إيجابية', emoji: '🟢', minLevel: LEVELS.SUPERVISOR },
   negative: { label: 'ملاحظة سلبية', emoji: '🟡', minLevel: LEVELS.SUPERVISOR },
 };
+// الرموز هنا أشكال لا ألوان: 🟡 و🟠 و🔴 ثلاثة صفراء متقاربة جداً لمن لديه
+// عمى ألوان أحمر/أخضر، والدرجة هي أخطر خاصية في نظام عقوبات. الشكل
+// (🗣️ ثم ⚠️ ثم ⛔ ثم 🚨) يُقرأ بالشكل حتى بلا لون، والمسمّى العربي يجاوره
+// دائماً فلا يُعتمد على الرمز وحده.
 const WARNING_TYPES = {
-  verbal: { label: 'إنذار شفهي', emoji: '🟡', freezeDays: 0, minLevel: LEVELS.SUPERVISOR },
-  first: { label: 'إنذار أول', emoji: '🟠', freezeDays: 14, minLevel: LEVELS.MANAGEMENT },
-  second: { label: 'إنذار ثاني', emoji: '🔴', freezeDays: 14, minLevel: LEVELS.MANAGEMENT },
-  final: { label: 'إنذار أخير', emoji: '🔴', freezeDays: 60, suspend: true, minLevel: LEVELS.BOSS },
+  verbal: { label: 'إنذار شفهي', emoji: '🗣️', freezeDays: 0, minLevel: LEVELS.SUPERVISOR },
+  first: { label: 'إنذار أول', emoji: '⚠️', freezeDays: 14, minLevel: LEVELS.MANAGEMENT },
+  second: { label: 'إنذار ثاني', emoji: '⛔', freezeDays: 14, minLevel: LEVELS.MANAGEMENT },
+  final: { label: 'إنذار أخير', emoji: '🚨', freezeDays: 60, suspend: true, minLevel: LEVELS.BOSS },
 };
 
 // ===== التقدير و«جدار الإنجازات» =====

@@ -266,7 +266,7 @@ function markLeft(userId) {
 }
 
 module.exports = {
-  get, all, ensure, setStatus, update, touchActivity, setRank, rankHistory, REMOVAL_TYPES,
+  get, all, ensure, setStatus, update, touchActivity, setRank, rankHistory, appendRankChange, REMOVAL_TYPES,
   applyRankRoles, removeTeamRoles, removeAllStaffRoles,
   vacationRole, addVacationRole, removeVacationRole,
   suspend, unsuspend, liftExpiredSuspensions, suspensionEnd,

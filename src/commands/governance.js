@@ -56,7 +56,11 @@ module.exports = {
           try { await member.roles.add(roleId, `تعيين ${rank} عبر Staff Manager`); } catch (e) { return deny(`❌ فشل إضافة الرتبة: ${e.message}`); }
           const saved = staffService.ensure(member, { reinstate: true });
           if (saved) staffService.update(user.id, { status: 'active' });
-          staffService.recordRankChange(user.id, {
+          // كان الاسم recordRankChange غير مُصدَّر إطلاقاً، فكان /manage-general
+          // يرمي TypeError بعد أن تكون الرتب قد غُيّرت فعلاً — كتابة نجحت ورأى
+          // المستخدم فشلاً. الاسم الحقيقي والتوقيع في كائن واحد.
+          staffService.appendRankChange({
+            userId: user.id,
             fromRank: existed?.rank || null,
             toRank: rank,
             team: 'general_management',
@@ -74,7 +78,7 @@ module.exports = {
         const removed = await staffService.removeAllStaffRoles(member);
         if (!removed) return deny('❌ لم أستطع إزالة الرتب الإدارية. تحقق من صلاحيات البوت.');
         staffService.setStatus(user.id, 'resigned');
-        staffService.recordRankChange(user.id, { fromRank: existing.rank, toRank: existing.rank, team: 'general_management', changeType: 'remove', reason, actorId: i.user.id });
+        staffService.appendRankChange({ userId: user.id, fromRank: existing.rank, toRank: existing.rank, team: 'general_management', changeType: 'remove', reason, actorId: i.user.id });
         audit.record({ action: 'general_management_removed', actorId: i.user.id, targetId: user.id, details: { previousRank: existing.rank, reason }, channelId: i.channelId });
         await log(i.client, '🏛️ إزالة من الإدارة العامة', `<@${user.id}> — ${existing.rank} — بواسطة <@${i.user.id}>${reason ? `\nالسبب: ${reason}` : ''}`, COLORS.warning);
         return i.editReply({ embeds: [embed('✅ تمت الإزالة', `تمت إزالة <@${user.id}> من الإدارة العامة وإزالة الرتب الإدارية المرتبطة به.`, COLORS.success)] });

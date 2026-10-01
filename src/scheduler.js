@@ -50,9 +50,25 @@ async function checkAbsence(client) {
 }
 
 // ===== الإجازات: تفعيل الرتبة / إنهاء / تذكيرات / مزامنة / انتهاء المعلقة =====
+
+/** رموز ديسكورد التي تعني «هذا المستخدم ليس عضواً في السيرفر» (وليست فشلاً عابراً). */
+const MEMBER_GONE_CODES = new Set([10004 /* UnknownGuild */, 10007 /* UnknownMember */]);
+
+/**
+ * جلب عضو مع تمييز «غادر السيرفر» عن «تعذّر الجلب مؤقتاً».
+ * التمييز مقصود: `catch { return null }` يخلط الخطأين، فلا نعرف الفرق بين
+ * «غادر السيرفر» (قرار نهائي: لا رتبة في سيرفر بلا عضو) وبين «ديسكورد
+ * تعذّر» أو «البوت بلا صلاحية» (يجب إعادة المحاولة غداً).
+ */
+async function fetchGuildMember(client, userId) {
+  const g = client?.guilds?.cache?.get(config.guildId) || [...(client?.guilds?.cache?.values?.() || [])][0];
+  if (!g?.members?.fetch) return { member: null, gone: false };
+  try { return { member: await g.members.fetch(userId), gone: false }; }
+  catch (e) { return { member: null, gone: MEMBER_GONE_CODES.has(Number(e?.code)) }; }
+}
+
 async function guildMember(client, userId) {
-  const g = client.guilds?.cache?.get(config.guildId) || [...(client.guilds?.cache?.values?.() || [])][0];
-  try { return g?.members?.fetch ? await g.members.fetch(userId) : null; } catch { return null; }
+  return (await fetchGuildMember(client, userId)).member;
 }
 
 async function processLeaves(client) {
@@ -78,15 +94,18 @@ async function processLeaves(client) {
   }
 
   // 0.5) تصعيد الطلبات المعلّقة التي تجاوزت مدة المراجعة المتفق عليها.
-const escalateHours = Number(policy.pendingEscalateHours || LEAVE_GLOBAL.pendingEscalateHours || 24);
-   if (escalateHours > 0) {
-     for (const r of pendingRows) {
-       const created = clock.parseStamp(r.created_at);
-       if (!created || Number.isNaN(created.getTime())) continue;
-       const hours = Math.floor((Date.now() - created.getTime()) / 3600000);
+  const escalateHours = Number(policy.pendingEscalateHours || LEAVE_GLOBAL.pendingEscalateHours || 24);
+  if (escalateHours > 0) {
+    for (const r of pendingRows) {
+      const created = clock.parseStamp(r.created_at);
+      if (!created || Number.isNaN(created.getTime())) continue;
+      const hours = Math.floor((Date.now() - created.getTime()) / 3600000);
       if (hours < escalateHours) continue;
-      const fresh = db.prepare('SELECT reminders_sent FROM leave_requests WHERE id = ?').get(r.id);
-      if (!leaveService.markReminder(r.id, fresh?.reminders_sent, 'escalate')) continue;
+      // الطلب قد يكون سقط في الخطوة 0 من هذه الدورة نفسها: لا نصعّد ما لم يعد
+      // معلّقاً، ولا نرسل أزرار مراجعة حيّة (approve/reject شغّالان) لطلب أُلغي.
+      if (!db.prepare("SELECT 1 FROM leave_requests WHERE id = ? AND status = 'pending'").get(r.id)) continue;
+      // المطالبة ذرّية: تذكير واحد فقط للإجابة، مهما تكرّر تشغيل المهمة.
+      if (!leaveService.claimReminder(r.id, 'escalate')) continue;
       try {
         await sendToChannel(client, 'leave-requests', { embeds: [embed('⏰ طلب بانتظار القرار', `${LEAVE_TYPES[r.leave_type] ? LEAVE_TYPES[r.leave_type] + ' — ' : ''}<@${r.user_id}>\nالطلب **#${r.id}** معلّق منذ **${hours}** ساعة (${r.start_date} → ${r.end_date}).\nيرجى البت فيه، أو استخدم «تعديل مقترح» لتواريخ بديلة.`, COLORS.warning)], components: [leaveReviewRow(r.id)] });
       } catch (e) { logger.warn(`تعذّر إرسال تصعيد الطلب ${r.id}: ${e.message}`); }
@@ -100,7 +119,7 @@ const escalateHours = Number(policy.pendingEscalateHours || LEAVE_GLOBAL.pending
     const member = await guildMember(client, r.user_id);
 
     // تذكير قبل البداية بيوم
-    if (r.start_date === addDays(t, 1) && leaveService.markReminder(r.id, r.reminders_sent, 'start')) {
+    if (r.start_date === addDays(t, 1) && leaveService.claimReminder(r.id, 'start')) {
       await dm(client, r.user_id, { embeds: [embed('🏖️ تذكير بداية الإجازة', `إجازتك **#${r.id}** تبدأ غداً (${kit.tsDate(r.start_date)}).\n${policy.vacationRoleTiming === 'at_start' ? 'ستُفعّل رتبة **in vacation** تلقائياً.' : 'رتبة **in vacation** مفعّلة من الموافقة.'}`, COLORS.info)] });
     }
 
@@ -112,13 +131,13 @@ const escalateHours = Number(policy.pendingEscalateHours || LEAVE_GLOBAL.pending
         // الرتبة مطلوبة عند بداية الإجازة فعلياً، بغض النظر عن توقيت المنح (at_start أو at_approval).
         const roleResult = await staffService.addVacationRole(member);
         if (roleResult.ok) db.prepare("UPDATE leave_requests SET role_applied_at = datetime('now') WHERE id = ?").run(r.id);
-        if (!roleResult.ok && leaveService.markReminder(r.id, r.reminders_sent, 'role_retry')) {
+        if (!roleResult.ok && leaveService.claimReminder(r.id, 'role_retry')) {
           await sendToChannel(client, 'staff-logs', { embeds: [embed('⚠️ تعذر تفعيل رتبة in vacation', `الإجازة **#${r.id}** لـ <@${r.user_id}> — ${roleResult.missing ? 'الرتبة غير مربوطة في /setup' : roleResult.error?.message || 'صلاحيات'}`, COLORS.warning)] });
         }
       }
     }
 
-    if (r.end_date === addDays(t, 1) && leaveService.markReminder(r.id, r.reminders_sent, 'end')) {
+    if (r.end_date === addDays(t, 1) && leaveService.claimReminder(r.id, 'end')) {
       await dm(client, r.user_id, { embeds: [embed('🏖️ تذكير نهاية الإجازة', `إجازتك تنتهي غداً (${kit.tsDate(r.end_date)}). نرجو العودة للنشاط بعدها.`, COLORS.info)] });
     }
 
@@ -135,11 +154,34 @@ const escalateHours = Number(policy.pendingEscalateHours || LEAVE_GLOBAL.pending
     }
   }
 
-  // إعادة محاولة إزالة الرتبة إن فشلت سابقاً
-  const cleanupUsers = db.prepare(`SELECT DISTINCT user_id FROM leave_requests WHERE status IN ('ended', 'cancelled') AND role_removed_at IS NULL`).all();
-  for (const { user_id: userId } of cleanupUsers) {
-    const member = await guildMember(client, userId);
-    if (!member) continue;
+  // إعادة محاولة إزالة الرتبة إن فشلت سابقاً.
+  //
+  // العضو الذي غادر السيرفر وهو في إجازة لا رتبة له أصلاً: لا عضو ولا رتبة.
+  // كان `if (!member) continue;` بلا حالة نهائية، فكل طلب لمن غادر أثناء إجازته
+  // ظلّ يُجلب كل يوم إلى الأبد بلا فائدة. وكان `DISTINCT` فوق ذلك يبني
+  // B-tree مؤقتة على كل الطلبات المنتهية والملغاة منذ بداية القاعدة — الآن
+  // مسح واحد بلا ترتيب مع تجميع داخل الذاكرة.
+  const pendingCleanup = db.prepare(`SELECT id, user_id FROM leave_requests
+    WHERE status IN ('ended', 'cancelled') AND role_removed_at IS NULL
+      AND instr(',' || COALESCE(reminders_sent, '') || ',', ',role_gone,') = 0`).all();
+  const byUser = new Map();
+  for (const row of pendingCleanup) {
+    if (!byUser.has(row.user_id)) byUser.set(row.user_id, []);
+    byUser.get(row.user_id).push(row.id);
+  }
+  for (const [userId, ids] of byUser) {
+    const { member, gone } = await fetchGuildMember(client, userId);
+    if (!member) {
+      if (gone) {
+        for (const requestId of ids) {
+          if (!leaveService.claimReminder(requestId, 'role_gone')) continue;
+          audit.record({ action: 'leave_role_cleanup_resolved', targetId: userId, details: { requestId, reason: 'member_not_in_guild' } });
+        }
+        logger.info(`العضو ${userId} غادر السيرفر — أُغلقت ${ids.length} عملية إزالة رتبة معلّقة بلا تنفيذ.`);
+      }
+      // تعذّر الجلب مؤقتاً: نُبقي الطلبات مفتوحة ونُعيد المحاولة في الدورة القادمة.
+      continue;
+    }
     const roleResult = await leaveService.syncVacationRole(member, t);
     if (roleResult.ok && !leaveService.approvedForUser(userId, { onOrAfter: t }).length) {
       db.prepare("UPDATE leave_requests SET role_removed_at = COALESCE(role_removed_at, datetime('now')) WHERE user_id = ? AND status IN ('ended', 'cancelled') AND role_removed_at IS NULL").run(userId);
@@ -149,7 +191,7 @@ const escalateHours = Number(policy.pendingEscalateHours || LEAVE_GLOBAL.pending
   // تنبيه بعد النهاية بـ 24 ساعة إن لم يعد
   const ended = db.prepare(`SELECT * FROM leave_requests WHERE status = 'ended' AND end_date = ?`).all(addDays(t, -1));
   for (const r of ended) {
-    if (!leaveService.markReminder(r.id, r.reminders_sent, 'overdue')) continue;
+    if (!leaveService.claimReminder(r.id, 'overdue')) continue;
     const s = staffService.get(r.user_id);
     const activityAfter = db.prepare('SELECT 1 FROM activity_logs WHERE user_id = ? AND day > ? LIMIT 1').get(r.user_id, r.end_date);
     if (s && !activityAfter) {
@@ -224,7 +266,7 @@ async function processResignations(client) {
     if (staffRolesRemoved && vacationRoleRemoved.ok) {
       db.prepare("UPDATE resignations SET roles_removed_at = datetime('now') WHERE id = ?").run(r.id);
       const info = staffService.get(r.user_id);
-      if (info) staffService.recordRankChange(r.user_id, { fromRank: info.rank, toRank: info.rank, team: info.team, changeType: 'remove', reason: `إزالة رتب الاستقالة #${r.id}` });
+      if (info) staffService.appendRankChange({ userId: r.user_id, fromRank: info.rank, toRank: info.rank, team: info.team, changeType: 'remove', reason: `إزالة رتب الاستقالة #${r.id}` });
       audit.record({ action: 'resignation_roles_removed_deferred', targetId: r.user_id, details: { requestId: r.id } });
     }
   }
@@ -385,6 +427,8 @@ const tasks = [];
 const scheduledTasks = [];
 const lastRun = new Map();
 let schedulerStarted = false;
+/** مقبض مؤقّت التشغيل الأولي — بلا تتبّع كان يُطلَق مرتين عند stop ثم start. */
+let bootstrapTimer = null;
 
 /** قائمة المهام المعروضة في /status */
 const JOBS = [];
@@ -464,6 +508,34 @@ function clearRunningTasks() {
   running.clear();
 }
 
+/**
+ * التشغيل الأولي بعد الإقلاع.
+ *
+ * يمرّ بحارس المهام نفسه (`guarded`) وبأسماء المهام نفسها التي تستخدمها cron،
+ * فذلك يُصلح أربعة عيوب دفعة واحدة في الكود القديم الذي كان ينادي الدوال
+ * الخام داخل `setTimeout`:
+ *   1) القفل ضد التكرار: إقلاع قبل الثانية 59 يترك التشغيل الأولي وتكّة cron
+ *      معاً في flight، فيفحص الغياب مرتين وتُرسل رسالة خاصة مرتين.
+ *   2) `try/catch` لكل مهمة مع تسجيلها في `job_runs`: كان أي فشل يبتلعه
+ *      المؤقّت صامتاً فلا يظهر في `/system-status` ولا يقلب `/healthz` إلى
+ *      degraded — تشغيل أولي معطوب يبقى مجهولاً للمشغّل إلى الأبد.
+ *   3) كل مهمة مستقلة: فشل واحدة لا يوقف الباقي (كل `wrapped` تبتلع خطأه).
+ *   4) المؤقّت متتبَّع فيُمسح في `stop()` فلا يُطلَق مرتين عند stop/start.
+ *
+ * لا نشغل التقارير اليومية/الأسبوعية/الشهرية هنا لتفادي تكرارها عند إعادة التشغيل.
+ * @returns {Promise<void>} ينتهي بعد اكتمال كل المهام (يستعمله الاختبار).
+ */
+function bootstrap(client) {
+  const jobs = [
+    ['absence', () => checkAbsence(client)],
+    ['suspensions', () => liftSuspensions(client)],
+    ['leaves', () => processLeaves(client)],
+    ['resignations', () => processResignations(client)],
+    ['task-reminders', () => processTaskReminders(client)],
+  ];
+  return Promise.all(jobs.map(([name, fn]) => guarded(name, fn)()));
+}
+
 function start(client) {
   if (schedulerStarted) {
     logger.warn('المجدول يعمل بالفعل — تم تجاهل طلب تشغيل مكرر.');
@@ -491,14 +563,10 @@ function start(client) {
     const scheduled = cron.schedule(expr, run, { timezone: tz });
     scheduledTasks.push(scheduled);
   }
-  // تشغيل أولي خفيف بعد الإقلاع - فقط المهام التي لا يجب أن تعمل يومياً
-  setTimeout(() => {
-    checkAbsence(client);
-    liftSuspensions(client);
-    processLeaves(client);
-    processResignations(client);
-    processTaskReminders(client);
-    // لا نشغل التقارير اليومية/الأسبوعية/الشهرية هنا لتجنب تكرارها عند إعادة التشغيل
+  // تشغيل أولي خفيف بعد الإقلاع — عبر الحارس لا عبر الدوال الخام (انظر bootstrap).
+  bootstrapTimer = setTimeout(() => {
+    bootstrapTimer = null;
+    bootstrap(client).catch((e) => logger.error('فشل التشغيل الأولي للمجدول:', e));
   }, 10_000);
   const paused = jobs.filter(([name]) => JOB_TOGGLES[name]).filter(([name]) => !jobEnabled(name)).map(([name]) => name);
   if (paused.length) logger.warn(`⏸️ مهام متوقفة عبر /config عند الإقلاع: ${paused.join('، ')}.`);
@@ -508,7 +576,9 @@ function start(client) {
 function stop() {
   for (const t of scheduledTasks) { try { t.stop(); } catch { /* ignore */ } }
   scheduledTasks.length = 0;
+  // المؤقّت غير المتتبَّع كان يبقى معلّقاً: stop ثم start يعني تشغيلين أوليين.
+  if (bootstrapTimer) { clearTimeout(bootstrapTimer); bootstrapTimer = null; }
   schedulerStarted = false;
 }
 
-module.exports = { start, stop, status, checkAbsence, liftSuspensions, processLeaves, processResignations, processTaskReminders, dailyReport, weeklyReport, monthlyReport, JOBS, JOB_TOGGLES, jobEnabled, clearRunningTasks };
+module.exports = { start, stop, status, bootstrap, checkAbsence, liftSuspensions, processLeaves, processResignations, processTaskReminders, dailyReport, weeklyReport, monthlyReport, JOBS, JOB_TOGGLES, jobEnabled, clearRunningTasks };
