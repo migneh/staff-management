@@ -216,6 +216,11 @@ module.exports = {
       if (target === i.user.id) return replyEphemeral(i, '❌ لا يمكنك إنذار نفسك.', COLORS.danger);
       if (!staffService.get(target)) return replyEphemeral(i, '❌ هذا العضو لم يعد مسجلاً كإداري.', COLORS.danger);
 
+      // نؤجل قبل النشر في قناة السجلات (شبكة) وقبل إيقاف العضو وكتابة الإشعار.
+      // الإنذار قد كُتب وأُرسل قبل أن يخرج التأجيل، فكان المستخدم يرى «فشل
+      // التفاعل» على إنذار سُجّل فعلاً — ويضغط مرة أخرى فيُصدر إنذاراً مكرراً.
+      await i.deferUpdate();
+
       const def = WARNING_TYPES[draft.type];
       const db = getDb();
       const res = db.prepare('INSERT INTO warnings (user_id, warning_type, reason, issued_by) VALUES (?, ?, ?, ?)')
@@ -233,7 +238,10 @@ module.exports = {
       
       const e = warningCard(draft, { rowId: res.lastInsertRowid });
       await sendToChannel(i.client, 'staff-logs', { embeds: [e] });
-      await i.update({ embeds: [e], components: [] });
+      // بعد deferUpdate لا يصلح update — editReply يُنهي الرد المؤجل. التأكيد
+      // الخاص للإداري يبقى followUp (replyEphemeral يوجّهه إليه تلقائياً لأن
+      // التفاعل صار replied)، فلا يختفي بتعديل الرسالة ولا يصطدم بإقرار مزدوج.
+      await i.editReply({ embeds: [e], components: [] });
       
       if (def.suspend) {
         await dm(i.client, draft.target, { embeds: [kit.card({
@@ -283,6 +291,10 @@ module.exports = {
       if (target === i.user.id) return replyEphemeral(i, '❌ لا يمكنك إضافة ملاحظة على نفسك.', COLORS.danger);
       if (!staffService.get(target)) return replyEphemeral(i, '❌ هذا العضو لم يعد مسجلاً كإداري.', COLORS.danger);
 
+      // نفس المسار: نشر البطاقة في قناة السجلات عملية شبكية تسبق أي رد،
+      // والملاحظة قد كُتبت قبلها فعلاً.
+      await i.deferUpdate();
+
       const def = NOTE_TYPES[draft.type];
       const db = getDb();
       const res = db.prepare('INSERT INTO staff_notes (user_id, note_type, content, is_secret, added_by) VALUES (?, ?, ?, ?, ?)')
@@ -292,7 +304,7 @@ module.exports = {
       
       const e = noteCard(draft, { rowId: res.lastInsertRowid });
       await sendToChannel(i.client, 'staff-logs', { embeds: [e] });
-      await i.update({ embeds: [e], components: [] });
+      await i.editReply({ embeds: [e], components: [] });
       
       await replyEphemeral(i, `${def.emoji} تمت إضافة ${def.label} على <@${draft.target}>${isSecret ? ' 🔒' : ''}.`, COLORS.success);
       // إشعار العضو مرة واحدة فقط، والملاحظة السرية لا تُرسل نصها إليه إطلاقاً.

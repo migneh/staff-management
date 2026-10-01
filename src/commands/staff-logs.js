@@ -1,154 +1,210 @@
 'use strict';
-const { SlashCommandBuilder, ActionRowBuilder, StringSelectMenuBuilder } = require('discord.js');
+/**
+ * ‎/staff-logs — سجل عمليات الفريق مع تصفية وترقيم صفحات حقيقي.
+ *
+ * كان معالج الترقيم `deferUpdate()` فقط بلا حلّ، فتدور القائمة حتى يموت رمز
+ * التفاعل بعد 15 دقيقة ويظهر «This interaction failed». والقائمة كانت تعرض
+ * صفحتين فقط (الأولى والأخيرة)، وقصّ 1024 حرفاً على النص كله فأسقط ~90 صفاً
+ * من مئة مُجلب بينما العنوان يقول «آخر 100 سجلات».
+ *
+ * الحلّ يتبع نمط tasks.js وleaves.js: ‎kit.navRow‎ ومعالجٌ بلا حالة يُعيد اشتقاق
+ * كل شيء من قاعدة البيانات عند كل ضغطة، والفلاتر تُحمل في معرّف المكوّن. لا
+ * staleness ولا رمز معلّق.
+ */
+const { SlashCommandBuilder } = require('discord.js');
 const { LEVELS } = require('../constants');
 const audit = require('../services/audit');
 const staffService = require('../services/staff');
 const settings = require('../services/settings');
-const { embed, COLORS, replyEphemeral, arDigits } = require('../utils');
+const { COLORS, arDigits } = require('../utils');
 const kit = require('../ui/kit');
 const clock = require('../clock');
+
+/**
+ * audit.list يحدّ الجلب عند 100 صف ولا يقبل OFFSET (انظر src/services/audit.js)،
+ * فالنافذة القابلة للتصفح هي أحدث 100 سجل مطابق. نعلن ذلك صراحةً بدل أن نكتب
+ * «من أصل 500» ونعرض مئة صامتة.
+ */
+const WINDOW = 100;
+const DEFAULT_PAGE_SIZE = 10;
+/**
+ * أقصى عدد صفوف في الصفحة: 15 صفاً × ‎ROW_TOTAL_CLIP‎ (250) = 3750 حرفاً،
+ * أي أربعة حقول على الأكثر — بهامش 2000 حرف تحت حد 6000. السقف منخفض عمداً:
+ * أي رقم أكبر يُجبرنا على قصّ صفوف في منتصف الطريق، وهو العطل الذي أصلحناه.
+ */
+const MAX_PAGE_SIZE = 15;
+/** أقصى طول لسطر السجل — التفاصيل الكاملة في ‎/audit-export‎ */
+const ROW_DETAIL_CLIP = 140;
+/** حارس إضافي: حقول السجلات لا تتجاوز هذا العدد ولا ميزانية الأحرف */
+const ROW_FIELDS_MAX = 6;
+const ROW_BUDGET = 5400;
+
+const titleize = action => String(action || '').split('_')
+  .map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+
+/**
+ * اسم الإجراء يدخل معرّف المكوّن المفتاح للترقيم، فلا يجوز أن يحمل «:» (يكسر
+ * تفكيك المعرّف) أو محارف غريبة. يُنقّى مرة واحدة هنا فيُستعمل في الاستعلام
+ * وفي المعرّف معاً، فتبقى الصفحة الثانية مطابقة للصفحة الأولى.
+ */
+function cleanAction(value) {
+  return String(value ?? '').trim().replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 40);
+}
+
+/**
+ * مُرشِّح المستخدم: لا يُوضع نص المستخدم في ‎<@...>‎ قبل أن يُطابق إدارياً
+ * مُسجّلاً — المنشن الخام كان يجعل ‎<@some-name>‎ يظهر كحرفة في العنوان.
+ */
+function resolveTarget(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) return { id: '', label: '', unknown: false };
+  const cleaned = text.replace(/[<@>]/g, '');
+  const byId = /^\d{15,22}$/.test(cleaned) ? staffService.get(cleaned) : null;
+  if (byId?.user_id) return { id: String(byId.user_id), label: `<@${byId.user_id}>`, unknown: false };
+  const q = text.toLowerCase();
+  const match = staffService.all().find(m => String(m.username).toLowerCase() === q
+    || String(m.user_id).toLowerCase() === q);
+  if (match) return { id: String(match.user_id), label: `<@${match.user_id}>`, unknown: false };
+  return { id: '', label: '', unknown: true };
+}
+
+/** حالة الصفحة — تُشتق بالكامل من خيارات الأمر أو من معرّف المكوّن */
+function normalize({ page, size, days, action, targetId, detailed } = {}) {
+  return {
+    page: Math.max(1, Math.trunc(Number(page) || 1)),
+    size: Math.min(MAX_PAGE_SIZE, Math.max(1, Math.trunc(Number(size) || DEFAULT_PAGE_SIZE))),
+    days: Math.min(365, Math.max(0, Math.trunc(Number(days) || 0))),
+    action: cleanAction(action),
+    targetId: /^\d{15,22}$/.test(String(targetId || '')) ? String(targetId) : '',
+    detailed: detailed === '1' || detailed === true,
+  };
+}
+
+const sinceFor = days => (days ? clock.addDays(clock.today(), -days) : null);
+
+/**
+ * سطر سجل واحد. رأس السطر (المعرّف + الإجراء + الوقت + الطرفان) يُركّب كاملاً
+ * ولا يُقصّ أبداً حتى لا ينقطع ‎<t:...>‎ أو منشن فينتهي كحرف عربي عادي؛
+ * التفاصيل وحدها هي التي تُقتطع، وداخل كتلة JSON أو بعد تهريب الأقواس.
+ */
+function rowLine(log, detailed) {
+  const actor = log.actor_id ? `<@${log.actor_id}>` : 'النظام';
+  const target = log.target_id ? `<@${log.target_id}>` : '—';
+  const head = `**#${log.id}** • ${titleize(log.action)}\n${clock.discordTs(log.created_at, 'R')} • بواسطة: ${actor} → ${target}`;
+  if (!detailed || !log.details) return head;
+  const parsed = audit.parseDetails(log.details);
+  // JSON داخل كتلة كود: لا يُفسَّر كمنشن. النص الحر يُهرَّب أولاً ثم يُقتطع.
+  const body = typeof parsed === 'string'
+    ? parsed.replace(/</g, '(').replace(/>/g, ')')
+    : `\`\`\`json\n${JSON.stringify(parsed, null, 2)}\n\`\`\``;
+  return `${head}\n${kit.clip(body, ROW_DETAIL_CLIP)}`;
+}
+
+/** حقول السجلات على حدود الأسطر — لا تُقصّ إلا عند حد 1024 حرفاً للحقل */
+function addLogFields(e, rows) {
+  const blocks = kit.chunkLines(rows, 1000);
+  let label = '📝 سجلات الصفحة';
+  let used = 0;
+  let added = 0;
+  for (const block of blocks) {
+    if (added >= ROW_FIELDS_MAX) break;
+    const spent = used + block.length + 60;
+    if (added > 0 && spent > ROW_BUDGET) break;
+    e.addFields({ name: label, value: kit.clip(block, 1024), inline: false });
+    used = spent;
+    added += 1;
+    label = '\u200b';
+  }
+  return added;
+}
+
+/** يجمع حالة الأمر من خياراته ثم يبني الحمولة (إمبد + صفوف تنقّل) */
+function buildPayload(state, { targetUnknown = false } = {}) {
+  const filters = {
+    actorId: state.targetId || null,
+    targetId: state.targetId || null,
+    action: state.action || null,
+    since: sinceFor(state.days),
+  };
+  const windowRows = audit.list({ ...filters, limit: WINDOW });
+  const total = audit.count(filters);
+  if (!windowRows.length) {
+    return {
+      embeds: [kit.notice('warning', 'لا توجد سجلات', 'لا توجد سجلات مطابقة لمعايير البحث.', { color: COLORS.gray })],
+      components: [],
+    };
+  }
+
+  const slice = kit.paginate(windowRows, state.page, state.size);
+  const target = state.targetId ? `<@${state.targetId}>` : '';
+  const title = `📋 سجلات الفريق${target ? ` — ${target}` : ''}${state.action ? ` — ${state.action}` : ''}`;
+
+  // العدّاد يصف ما رُسم فعلاً، لا ما جُلب: «عرض 10 من أصل 30» مع 10 صفوف فقط.
+  const notes = [`عرض ${slice.items.length} من أصل ${total} سجل`];
+  if (state.days) notes.push(`النافذة: آخر ${state.days} يوم`);
+  if (targetUnknown) notes.push('المرشّح لم يطابق أي إداري مُسجّل فلم يُطبَّق');
+  if (total > WINDOW) notes.push(`النافذة تعرض أحدث ${WINDOW} سجلاً فقط — ${total - WINDOW} سجلاً أقدم خارجها`);
+
+  const e = kit.card({ title, description: notes.join(' • '), color: COLORS.info });
+
+  const counts = new Map();
+  for (const log of windowRows) counts.set(log.action, (counts.get(log.action) || 0) + 1);
+  const summary = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5)
+    .map(([action, c]) => `${titleize(action)}: ${arDigits(c)}`).join(' • ');
+  e.addFields({ name: '📊 أكثر الإجراءات تكراراً (ضمن النافذة)', value: summary || 'لا يوجد', inline: false });
+
+  addLogFields(e, slice.items.map(log => rowLine(log, state.detailed)));
+  e.setFooter({ text: kit.footerLine(`صفحة ${slice.page}/${slice.pages} • أحدث ${slice.items.length} سجلاً معروضاً`) });
+
+  const args = [state.size, state.days, state.action, state.targetId, state.detailed ? '1' : '0'];
+  const components = slice.pages > 1
+    ? [kit.navRow({ prefix: 'staff-logs:page', page: slice.page, pages: slice.pages, args })]
+    : [];
+  return { embeds: [e], components };
+}
 
 module.exports = {
   commands: [
     {
       data: new SlashCommandBuilder().setName('staff-logs').setDescription('عرض سجلات الفريق مع التصفية والبحث')
-        .addStringOption(o => o.setName('action').setDescription('تصفية حسب الإجراء (مثل: staff_warning_issued, task_assigned)'))
-        .addStringOption(o => o.setName('user').setDescription('تصفية حسب المستخدم (معرف أو منشن)'))
-        .addStringOption(o => o.setName('limit').setDescription('عدد السجلات (الافتراضي: 20, الأقصى: 100)'))
-        .addStringOption(o => o.setName('days').setDescription('عدد الأيام السابقة (الافتراضي: 7)'))
-        .addBooleanOption(o => o.setName('detailed').setDescription('عرض تفاصيل JSON الكاملة')),
+        .addStringOption(o => o.setName('action').setDescription('تصفية حسب الإجراء (مثل: staff_warning_issued, task_assigned)').setMaxLength(64))
+        .addStringOption(o => o.setName('user').setDescription('تصفية حسب المستخدم (معرّف أو اسم)').setMaxLength(64))
+        .addIntegerOption(o => o.setName('limit').setDescription(`عدد السجلات في الصفحة (1-${MAX_PAGE_SIZE}، الافتراضي: ${DEFAULT_PAGE_SIZE})`).setMinValue(1).setMaxValue(MAX_PAGE_SIZE))
+        // الوصف يقول ما يفعله الكود فعلاً: بلا days = بلا فلتر زمني (كل السجلات).
+        .addIntegerOption(o => o.setName('days').setDescription('عدد الأيام السابقة — بلا فلتر افتراضياً (كل السجلات)').setMinValue(1).setMaxValue(365))
+        .addBooleanOption(o => o.setName('detailed').setDescription('عرض تفاصيل JSON (مقتطعة)')),
       // سجل التدقيق يحتوي إنذارات وملاحظات سرية وأسباب استقالات — كان متاحاً بالخطأ لكل إداري (حتى Helper)؛
       // يجب أن يطابق صلاحية /audit-log (الإدارة العليا فقط).
       level: LEVELS.MANAGEMENT,
       async execute(i) {
-        if (!settings.featureToggle('auditExport')) return replyEphemeral(i, '❌ هذا أمر معطّل حالياً.', COLORS.danger);
-        const actionFilter = i.options.getString('action');
-        const userFilter = i.options.getString('user');
-        const limitOpt = i.options.getString('limit');
-        const daysOpt = i.options.getString('days');
-        const detailed = i.options.getBoolean('detailed') || false;
-        
-        let limit = 20;
-        if (limitOpt) {
-          limit = Math.min(parseInt(limitOpt), 100);
-          if (isNaN(limit)) limit = 20;
+        if (!settings.featureToggle('auditExport')) {
+          return i.reply({ embeds: [kit.notice('error', 'هذا الأمر معطّل حالياً.')], ephemeral: true });
         }
-        
-        let since = null;
-        if (daysOpt) {
-          const days = parseInt(daysOpt);
-          if (!isNaN(days) && days > 0) {
-            const date = new Date();
-            date.setDate(date.getDate() - days);
-            since = date.toISOString().slice(0, 10);
-          }
-        }
-        
-        // Resolve user filter if provided
-        let targetId = null;
-        if (userFilter) {
-          const userId = userFilter.replace(/[<@>]/g, '');
-          if (/^\d+$/.test(userId)) {
-            const member = staffService.get(userId);
-            if (member) targetId = userId;
-          } else {
-            // Try to find by username
-            const allStaff = staffService.all();
-            const match = allStaff.find(m => 
-              m.username.toLowerCase() === userFilter.toLowerCase() ||
-              m.user_id.toLowerCase() === userFilter.toLowerCase()
-            );
-            if (match) targetId = match.user_id;
-          }
-        }
-        
-        const logs = audit.list({ actorId: targetId, targetId: targetId, limit, action: actionFilter, since });
-        const totalCount = audit.count({ actorId: targetId, targetId: targetId, action: actionFilter, since });
-        
-        if (!logs.length) {
-          return replyEphemeral(i, '❌ لا توجد سجلات تطابق معايير البحث.', COLORS.warning);
-        }
-        
-        // Build embed with summary
-        const e = kit.card({
-          title: `📋 سجلات الفريق${userFilter ? ` - <@${userFilter}>` : ''}${actionFilter ? ` - ${actionFilter}` : ''}`,
-          description: `عرض ${logs.length} من أصل ${totalCount} سجل${since ? ` من آخر ${daysOpt} يوم` : ''}`,
-          color: COLORS.info,
-          timestamp: new Date()
+        const state = normalize({
+          size: i.options.getInteger('limit'),
+          days: i.options.getInteger('days'),
+          action: i.options.getString('action'),
+          detailed: i.options.getBoolean('detailed') ? '1' : '0',
         });
-        
-        // Add summary stats
-        const actionsMap = {};
-        logs.forEach(log => {
-          actionsMap[log.action] = (actionsMap[log.action] || 0) + 1;
-        });
-        
-        const actionSummary = Object.entries(actionsMap)
-          .sort(([,a], [,b]) => b - a)
-          .slice(0, 5)
-          .map(([action, count]) => {
-            const actionName = action.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-            return `${actionName}: ${arDigits(count)}`;
-          })
-          .join(' • ');
-          
-        e.addFields({
-          name: '📊 ملخص الإجراءات',
-          value: actionSummary || 'لا يوجد',
-          inline: true
-        });
-        
-        // Add recent logs
-        const recentLogs = logs.slice(0, 10).map(log => {
-          const timestamp = clock.discordTs(log.created_at, 'R');
-          const actionName = log.action.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-          const actor = log.actor_id ? `<@${log.actor_id}>`: 'النظام';
-          const target = log.target_id ? `<@${log.target_id}>`: '—';
-          
-          let details = '';
-          if (detailed && log.details) {
-            try {
-              const parsed = JSON.parse(log.details);
-              details = '\n```json\n' + JSON.stringify(parsed, null, 2) + '\n```';
-            } catch {
-              details = `\n${log.details}`;
-            }
-          }
-          
-          return `**#${log.id}** • ${actionName}\n${timestamp} • بواسطة: ${actor} → ${target}${details}`;
-        }).join('\n\n');
-        
-        e.addFields({
-          name: `📝 آخر ${logs.length < 10 ? logs.length : 10} سجلات`,
-          value: recentLogs.slice(0, 1024),
-          inline: false
-        });
-        
-        // Add pagination controls if needed
-        const components = [];
-        if (totalCount > limit) {
-          const pageCount = Math.ceil(totalCount / limit);
-          const select = new StringSelectMenuBuilder()
-            .setCustomId('staff-logs:page')
-            .setPlaceholder(`اختر الصفحة (1/${pageCount})`)
-            .addOptions([
-              { label: 'الصفحة 1', value: '1', description: `الصفحة الأولى من ${pageCount}` },
-              { label: `الصفحة ${pageCount}`, value: String(pageCount), description: `الصفحة الأخيرة من ${pageCount}` }
-            ]);
-          
-          components.push(new ActionRowBuilder().addComponents(select));
-        }
-        
-        return i.reply({ embeds: [e], components, ephemeral: true });
+        const { id, unknown } = resolveTarget(i.options.getString('user'));
+        return i.reply({ ...buildPayload({ ...state, targetId: id }, { targetUnknown: unknown }), ephemeral: true });
       },
     },
   ],
-  
+
   components: {
-    'staff-logs:page': async (i) => {
-      // Pagination would be implemented here
-      // For now, just acknowledge the interaction
-      await i.deferUpdate();
-    }
-  }
+    /**
+     * بلا حالة: كل نقرة تعيد قراءة القاعدة بفلاتر معرّف المكوّن نفسه. لا مخزن،
+     * لا رمز معلّق — و‎i.update‎ يُنهي التفاعل فوراً بدل أن يدور حتى ينتهي الرمز.
+     */
+    'staff-logs:page': async (i, [page, size, days, action, targetId, detailed]) => {
+      if (!settings.featureToggle('auditExport')) {
+        return i.update({ embeds: [kit.notice('error', 'هذا الأمر معطّل حالياً.')], components: [] });
+      }
+      return i.update(buildPayload(normalize({ page, size, days, action, targetId, detailed })));
+    },
+  },
+
+  // مُصدَّرة للاختبار: تثبت أن البناء يبقى داخل حدود ديسكورد مهما كبرت النافذة
+  __testing: { buildPayload, normalize, rowLine, MAX_PAGE_SIZE, WINDOW },
 };

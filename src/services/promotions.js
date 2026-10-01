@@ -54,8 +54,7 @@ function safeJson(text) {
 }
 
 /** درجة العضو داخل تقرير شهري محفوظ، أو null إن لم يرد فيه */
-function memberScore(data, userId) {
-  const parsed = safeJson(data);
+function memberScore(parsed, userId) {
   const members = parsed && Array.isArray(parsed.members) ? parsed.members : [];
   const row = members.find(m => m && String(m.user) === String(userId));
   const value = row ? Number(row.score) : NaN;
@@ -78,22 +77,22 @@ function stability(userId, months, minScore, team) {
   const wanted = Math.max(1, Math.trunc(Number(months) || 0));
   const floor = Number(minScore) || 0;
   const db = getDb();
+  // نمرّ على الصفوف مرة واحدة ونفكّ ترميز كل تقرير مرة واحدة. النسخة السابقة كانت تمرّ مرتين وتفكّ ترميز كل صف مرتين على الأقل — نحو 144 عملية JSON.parse لعضو واحد عند 3 سنوات.
+  // النتيجة هي نفسها: تقريرا الفريقين لنفس الشهر شهر واحد لا شهران، ونسخة فريق العضو مفضّلة.
   const rows = db.prepare(`SELECT period, data FROM saved_reports WHERE report_type = 'monthly' ORDER BY period DESC`).all();
-  // نمرّ على الصفوف مرتين: نسخة فريق العضو أولاً ثم البقية، ونأخذ أول تقرير
-  // يرد فيه العضو لكل شهر — تقريرا الفريقين لنفس الشهر شهر واحد لا شهران.
-  const byPeriod = new Map();
-  for (const pass of ['team', 'any']) {
-    for (const row of rows) {
-      const period = String(row.period).split(':')[0];
-      if (byPeriod.has(period)) continue;
-      if (pass === 'team' && team && !String(row.period).endsWith(`:${team}`)) continue;
-      const value = memberScore(row.data, userId);
-      if (value == null) continue; // التقرير لا يخص هذا العضو — جرّب نسخة الفريق الأخرى
-      byPeriod.set(period, value);
-    }
+  const chosen = new Map();
+  for (const row of rows) {
+    const period = String(row.period).split(':')[0];
+    const preferred = !!(team && String(row.period).endsWith(`:${team}`));
+    const held = chosen.get(period);
+    // نسخة الفريق المفضّلة لا تُستبدل، والبديل يُكتب فقط إن لم يوجد شيء بعد.
+    if (held && (held.preferred || !preferred)) continue;
+    const value = memberScore(safeJson(row.data), userId);
+    if (value == null) continue; // التقرير لا يخص هذا العضو — جرّب نسخة الفريق الأخرى
+    chosen.set(period, { value, preferred });
   }
-  const periods = [...byPeriod.keys()].sort().reverse().slice(0, wanted);
-  const scores = periods.map(p => byPeriod.get(p));
+  const periods = [...chosen.keys()].sort().reverse().slice(0, wanted);
+  const scores = periods.map(p => chosen.get(p).value);
   const missing = wanted - periods.length;
   const passed = missing === 0 && scores.every(s => s >= floor);
   return {
@@ -124,7 +123,12 @@ function evaluate(staff) {
 
   const months = clock.monthsSince(staff.rank_since);
 
-  const warnCount = db.prepare(`SELECT COUNT(*) c FROM warnings WHERE user_id = ? AND voided_at IS NULL AND date(created_at) >= ? AND warning_type != 'verbal'`).get(staff.user_id, warnSince).c;
+  // أنصاف مفتوحة على الأعمدة الخام (clock.dayStartStamp) لا date(col) >= ?:
+  // date() ليست حدّاً قابلاً للفهرسة فكانت SQLite تفحص كل تاريخ العضو بلا تقليم.
+  const sinceStamp = clock.dayStartStamp(since) || since;
+  const warnSinceStamp = clock.dayStartStamp(warnSince) || warnSince;
+
+  const warnCount = db.prepare(`SELECT COUNT(*) c FROM warnings WHERE user_id = ? AND voided_at IS NULL AND created_at >= ? AND warning_type != 'verbal'`).get(staff.user_id, warnSinceStamp).c;
 
   const checks = [];
   const ok = (label, pass, actual, required) => checks.push({ label, pass, actual, required });
@@ -145,12 +149,16 @@ function evaluate(staff) {
   if (staff.team === 'support') {
     // الرسائل في قنوات العمل (المخلفات) خلال النافذة
     if (rule.minMessages != null) {
-      const msgs = db.prepare(`SELECT COUNT(*) c FROM activity_logs WHERE user_id = ? AND date(created_at) >= ?`).get(staff.user_id, since).c;
+      // عمود created_at الخام لا day: day = today() بتوقيت TZ بينما created_at
+      // UTC، فالتبديل بينهما يزيح حدّ النافذة حتى 3 ساعات عند الطرف. score.js
+      // يقارن بيوم عن قصد ليجد عموداً مفهرساً، وهنا المطلوب فقط أن يصبح
+      // الحدّ قابلاً للفهرسة.
+      const msgs = db.prepare(`SELECT COUNT(*) c FROM activity_logs WHERE user_id = ? AND created_at >= ?`).get(staff.user_id, sinceStamp).c;
       ok(`الرسائل (${windowLabel(windowDays)})`, msgs >= rule.minMessages, `${msgs}`, `${rule.minMessages}+`);
     }
     // تقييم العملاء (من support_ratings التجارية)
     if (rule.rating) {
-      const sr = db.prepare(`SELECT COUNT(*) c, AVG(stars) r FROM support_ratings WHERE staff_id = ? AND date(rated_at) >= ?`).get(staff.user_id, since);
+      const sr = db.prepare(`SELECT COUNT(*) c, AVG(stars) r FROM support_ratings WHERE staff_id = ? AND rated_at >= ?`).get(staff.user_id, sinceStamp);
       const rating = sr.r != null ? Math.round(sr.r * 100) / 100 : null;
       const insufficient = sr.c < PROBATION.minTicketsForRating;
       const pass = !insufficient && rating != null && rating >= rule.rating;
@@ -168,13 +176,15 @@ function evaluate(staff) {
       ok('تقييم المشرف', rated, actual, `تقييم خلال ${RATING_VALID_DAYS} يوماً`);
     }
   } else {
-    const a = db.prepare(`SELECT COUNT(*) c FROM mod_actions WHERE moderator_id = ? AND date(created_at) >= ?`).get(staff.user_id, since);
+    const a = db.prepare(`SELECT COUNT(*) c FROM mod_actions WHERE moderator_id = ? AND created_at >= ?`).get(staff.user_id, sinceStamp);
     ok(`الإجراءات المعالجة (${windowLabel(windowDays)})`, a.c >= rule.actions, `${a.c}`, `${rule.actions}+`);
     if (rule.requireConflictResolution) ok('حل النزاعات', a.c >= 5, `${a.c} إجراء`, 'سجل إجراءات كافٍ');
   }
 
   if (rule.minActiveDays) {
-    const activeDays = db.prepare(`SELECT COUNT(DISTINCT day) d FROM activity_logs WHERE user_id = ? AND date(created_at) >= ?`).get(staff.user_id, since).d;
+    // عدّ الأيام المتمايزة من عمود day، لكن النافذة على created_at (UTC) —
+    // انظر ملاحظة الاستعلام السابق عن فرق التوقيت.
+    const activeDays = db.prepare(`SELECT COUNT(DISTINCT day) d FROM activity_logs WHERE user_id = ? AND created_at >= ?`).get(staff.user_id, sinceStamp).d;
     ok(`التواجد (${windowLabel(windowDays)})`, activeDays >= rule.minActiveDays, `${activeDays} يوم`, `${rule.minActiveDays}+`);
   }
 
@@ -204,7 +214,7 @@ function evaluate(staff) {
   // القرارات الخاطئة: لا يوجد جدول مستقل لها، فالسجل الوحيد لقرار وُصف بالخطأ
   // داخل النافذة هو الملاحظة السلبية من المشرف (staff_notes).
   if (rule.maxWrongDecisions != null) {
-    const wrong = db.prepare(`SELECT COUNT(*) c FROM staff_notes WHERE user_id = ? AND note_type = 'negative' AND date(created_at) >= ?`).get(staff.user_id, since).c;
+    const wrong = db.prepare(`SELECT COUNT(*) c FROM staff_notes WHERE user_id = ? AND note_type = 'negative' AND created_at >= ?`).get(staff.user_id, sinceStamp).c;
     ok(`القرارات الخاطئة (${windowLabel(windowDays)})`, wrong <= rule.maxWrongDecisions, `${wrong}`, `أقصى ${rule.maxWrongDecisions}`);
   }
 

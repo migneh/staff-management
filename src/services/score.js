@@ -48,30 +48,43 @@ function monthlyRaw(userId, days = NOMINAL_WINDOW, offset = 0) {
   const start = clock.addDays(end, -(windowDays - 1));
 
   // النشاط: من عمود day المفهرس لا من created_at
+  // النافذة بنصف مفتوح على العمود الخام (clock.dayWindow) لا date(col) BETWEEN:
+  // تغليف العمود بدالة لا يصلح حدّاً لفهرس، فكانت SQLite تفحص كل ما أنشأه
+  // العضو (73 ألف صف) وتكتفي بعمود التساوي. انظر clock.dayWindow للسبب.
+  const win = clock.dayWindow(start, end) || { start, endExclusive: end };
+
   const act = db.prepare(`SELECT COUNT(*) c, COALESCE(SUM(weight), 0) w, COUNT(DISTINCT day) d
     FROM activity_logs WHERE user_id = ? AND day BETWEEN ? AND ?`).get(userId, start, end);
 
   const tick = db.prepare(`SELECT COUNT(*) c, AVG(duration) dur, COALESCE(SUM(reopened), 0) re,
       COUNT(rating) rated, AVG(rating) rating
-    FROM ticket_metrics WHERE claimer = ? AND date(closed_at) BETWEEN ? AND ?`).get(userId, start, end);
+    FROM ticket_metrics WHERE claimer = ? AND closed_at >= ? AND closed_at < ?`)
+    .get(userId, win.start, win.endExclusive);
 
   // مصدر التقييم: النظام الخارجي أولاً. لا يُجمع أبداً مع تقييمات التكتات —
   // فالتقييم الواحد لعميل واحد ليس مصدرين، وجمعهما يضاعف أثره ويشوّه المتوسط.
   const ext = db.prepare(`SELECT COUNT(*) c, AVG(stars) a
-    FROM support_ratings WHERE staff_id = ? AND date(rated_at) BETWEEN ? AND ?`).get(userId, start, end);
+    FROM support_ratings WHERE staff_id = ? AND rated_at >= ? AND rated_at < ?`)
+    .get(userId, win.start, win.endExclusive);
 
   const actions = db.prepare(`SELECT COUNT(*) c FROM mod_actions
-    WHERE moderator_id = ? AND date(created_at) BETWEEN ? AND ?`).get(userId, start, end).c;
+    WHERE moderator_id = ? AND created_at >= ? AND created_at < ?`)
+    .get(userId, win.start, win.endExclusive).c;
 
   const warnings = db.prepare(`SELECT COUNT(*) c FROM warnings
-    WHERE user_id = ? AND voided_at IS NULL AND date(created_at) BETWEEN ? AND ?`).get(userId, start, end).c;
+    WHERE user_id = ? AND voided_at IS NULL AND created_at >= ? AND created_at < ?`)
+    .get(userId, win.start, win.endExclusive).c;
 
   const notes = db.prepare(`SELECT note_type, COUNT(*) c FROM staff_notes
-    WHERE user_id = ? AND date(created_at) BETWEEN ? AND ? GROUP BY note_type`).all(userId, start, end);
+    WHERE user_id = ? AND created_at >= ? AND created_at < ? GROUP BY note_type`)
+    .all(userId, win.start, win.endExclusive);
 
-  // الإجازات المعتمدة أو المنتهية المتقاطعة مع النافذة (طرفا المدة محسوبان)
+  // الإجازات المعتمدة أو المنتهية المتقاطعة مع النافذة (طرفا المدة محسوبان).
+  // start_date/end_date أعمدة تاريخ (YYYY-MM-DD) يتحقّق leaves.js من صيغتها قبل
+  // الحفظ، فالمقارنة النصية المباشرة مطابقة لـ date() وكلاهما يمرّ بـ
+  // idx_leave_user_dates. services/leaves.js يقارن بنفس الشكل.
   const leaveRows = db.prepare(`SELECT start_date, end_date FROM leave_requests
-    WHERE user_id = ? AND status IN ('approved', 'ended') AND date(start_date) <= ? AND date(end_date) >= ?`)
+    WHERE user_id = ? AND status IN ('approved', 'ended') AND start_date <= ? AND end_date >= ?`)
     .all(userId, end, start);
   let leaveDays = 0;
   for (const row of leaveRows) {

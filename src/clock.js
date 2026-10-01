@@ -54,6 +54,40 @@ function addDays(dateStr, days) {
   return d.toISOString().slice(0, 10);
 }
 
+/**
+ * حدّ يوم واحد كطابع زمني UTC قابل للمقارنة النصية مع عمود مخزَّن
+ * ('YYYY-MM-DD 00:00:00'). أعمدة created_at/closed_at/rated_at تُخزَّن
+ * بـ datetime('now') وبـ toISOString().slice(0,19) — أي 19 محرفاً دائماً،
+ * فالمقارنة النصية المعجمية عليها صحيحة وترتيبية.
+ * @param {string} day YYYY-MM-DD
+ * @returns {string|null} الطابع أو null إن لم يكن يوماً صالحاً
+ */
+function dayStartStamp(day) {
+  return isValidDate(day) ? `${day} 00:00:00` : null;
+}
+
+/**
+ * نافذة يومية **نصف مفتوحة** (half-open) قابلة للفهرسة على عمود طابع زمني.
+ *
+ * لماذا لا `date(col) BETWEEN ? AND ?`: تغليف العمود بدالة يجعله غير قابل
+ * لأن يكون حدّاً لفهرس B-tree، فيقيّده SQLite بعمود التساوي الأسبق فقط
+ * ويمرّر date() على كل ما أنشأه العضو — وكل تاريخ بلا تقليم.
+ *
+ * لماذا `<` وليس `<=`: BETWEEN شامل للطرفين، فاستبداله بـ `<= end 23:59:59`
+ * يُسقط صفاً سُجّل في 23:59:59.5 من اليوم الأخير. الحدّ الأعلى = منتصف ليل
+ * اليوم التالي، فيبقى اليوم الأخير مشمولاً بالكامل.
+ *
+ * @param {string} startDay اليوم الأول — مشمول
+ * @param {string} endDay اليوم الأخير — مشمول
+ * @returns {{start:string, endExclusive:string}|null}
+ */
+function dayWindow(startDay, endDay) {
+  const start = dayStartStamp(startDay);
+  const endExclusive = dayStartStamp(addDays(endDay, 1));
+  if (!start || !endExclusive || endExclusive <= start) return null;
+  return { start, endExclusive };
+}
+
 function daysBetween(a, b) {
   const da = parseStamp(a);
   const db = parseStamp(b);
@@ -88,6 +122,6 @@ function previousMonth(yyyymm) {
 }
 
 module.exports = {
-  TZ, dayOf, today, nowIso, parseStamp, isValidDate, addDays, daysBetween,
-  hoursSince, monthsSince, discordTs, previousMonth,
+  TZ, dayOf, today, nowIso, parseStamp, isValidDate, addDays, dayStartStamp,
+  dayWindow, daysBetween, hoursSince, monthsSince, discordTs, previousMonth,
 };

@@ -8,10 +8,57 @@ const COLORS = { primary: 0x5865f2, success: 0x57f287, warning: 0xfee75c, danger
 // حماية عامة: محتوى ديناميكي طويل أو كائن غير نصي كان يُسقط الرد بالكامل.
 const MAX_TITLE = 256;
 const MAX_DESCRIPTION = 4096;
-function clampText(value, max) {
-  const text = String(value);
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+
+const ELLIPSIS = '…';
+// علامات التشكيل والتطويل (U+064B–U+065F) والألف الخنجرية (U+0670).
+const ARABIC_DIACRITIC = /[ً-ٰٟ]/;
+
+/**
+ * قصّ واحد واعي بما يقصّه، لكل النصوص العربية الطويلة في المشروع.
+ *
+ * القصّ الساذج s.slice(0, n) يفسد ما يمرّ بحدّه — والفساد يظهر للمستخدم:
+ *   1. شريط ** 조합ي يُقطع فينتهي بنجمة عارية ظاهرة.
+ *   2. طابع <t:1759276800:R> يُقطع فيُعرض حرفياً «<t:1759276800» بدل التاريخ.
+ *   3. منشور <@id> أو backtick يُقطع فيظهر نصف رمز أو فتح كود معلّق.
+ *   4. علامة تشكيل عربية (قُرْآن) تُقطع فتسبح وحدها فوق حرف مقطوع.
+ *
+ * الترتيب مقصود: نأخذ شريحة أولية أوسع من الحدّ ثم نتراجع للخلف، فنضمن أن
+ * النتيجة النهائية دائماً ≤ الحدّ مهما تراجعت الإصلاحات. ولا نضيف علامة حذف
+ * إلا إن بقي بعد الإصلاح ما يستحق القراءة.
+ */
+function clipRich(value, max) {
+  const s = value == null ? '' : String(value);
+  const limit = Math.floor(Number(max));
+  if (!Number.isFinite(limit) || limit <= 0) return '';
+  if (s.length <= limit) return s;
+  // نبدأ من أبعد بقليل من الحدّ: الإصلاحات تُقصّر فقط، فالمحصّلة أقل من الحدّ دائماً.
+  let out = s.slice(0, Math.max(0, limit - 1));
+  // 1) ذيل طابع أو منشور أو قناة غير مكتمل: نزيل ما بعد آخر '<' إن بقي بلا '>'.
+  const lt = out.lastIndexOf('<');
+  if (lt !== -1 && out.indexOf('>', lt) === -1) out = out.slice(0, lt);
+  // 2) ** غير متوازن: نزيل الفاتح المعلّق (آخر **) بدل ترك نجمة عارية.
+  if ((out.match(/\*\*/g) || []).length % 2 === 1) {
+    const i = out.lastIndexOf('**');
+    if (i !== -1) out = out.slice(0, i);
+  }
+  // 2ب) بقايا نجمة مفردة من شريط ** مقطوعة: عدد النجوم زوجي ⇒ لا فاصل سليم ⇒ ننزع الذيل.
+  if ((out.match(/\*/g) || []).length % 2 === 1) {
+    out = out.replace(/\*+$/, '');
+  }
+  // 3) backtick غير متوازن: نفس القاعدة.
+  if ((out.match(/`/g) || []).length % 2 === 1) {
+    const i = out.lastIndexOf('`');
+    if (i !== -1) out = out.slice(0, i);
+  }
+  // 4) علامة تشكيل/تطويل معلّقة في آخر النص: نتراجع للخلف حتى آخر محرف غير مُعلِّم.
+  while (out.length > 0 && ARABIC_DIACRITIC.test(out[out.length - 1])) out = out.slice(0, -1);
+  // مسافة/سطر قبل علامة الحذف يبدو مكسوراً — ننظّفه.
+  out = out.replace(/[\s-]+$/u, '');
+  if (!out) return ELLIPSIS.slice(0, limit);
+  return out.length + 1 > limit ? `${out.slice(0, Math.max(0, limit - 1))}${ELLIPSIS}` : `${out}${ELLIPSIS}`;
 }
+
+function clampText(value, max) { return clipRich(value, max); }
 function embedText(value) {
   return value == null || typeof value === 'object' ? null : String(value);
 }
@@ -39,7 +86,8 @@ const divider = '━━━━━━━━━━━━━━━━━━━━';
 // كل حسابات الوقت في مكان واحد — راجع src/clock.js لمعرفة قاعدة التوقيت.
 const { nowIso, today, addDays, isValidDate, daysBetween, monthsSince, hoursSince, discordTs } = clock;
 
-function truncate(s, n) { return s && s.length > n ? s.slice(0, n - 1) + '…' : s || ''; }
+/** القصّ الوحيد في المشروع — trim في kit وclip كلتيهما تفوّضان إليه. */
+function truncate(s, n) { return clipRich(s, n); }
 
 // ===== الأرقام: تُعرض عربية-هندية في الواجهة، وتُقرأ بأي شكل من المستخدم =====
 const AR_DIGITS_MAP = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
@@ -141,7 +189,7 @@ function scoreEmoji(score) {
 module.exports = {
   COLORS, embed, userEmbed, ok, fail, divider,
   nowIso, today, addDays, isValidDate, daysBetween, monthsSince, hoursSince, discordTs,
-  arDigits, normalizeDigits, toInt, truncate,
+  arDigits, normalizeDigits, toInt, truncate, clipRich,
   getChannel, sendToChannel, log, dm, replyEphemeral, progressBar,
   scoreColor, scoreEmoji,
 };

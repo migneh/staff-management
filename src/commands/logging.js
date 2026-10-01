@@ -214,8 +214,11 @@ async function saveTicket(i, input, sourceLabel = 'يدوي') {
     manualOverride: input.source === 'manual' && input.claimer !== i.user.id,
   }, channelId: i.channelId });
   const e = ticketEmbed(result, i.user.id, sourceLabel);
+  // saveTicket يُستدعى من modal submit (ticket:log) ⇒ deferReply لا deferUpdate.
+  // النشر في ticket-logs عملية شبكية تسبق الرد، والتكت قد حُسبت قبلها.
+  await i.deferReply({ ephemeral: true });
   await sendToChannel(i.client, 'ticket-logs', { embeds: [e] });
-  return i.reply({ embeds: [e], ephemeral: true });
+  return i.editReply({ embeds: [e] });
 }
 
 module.exports = {
@@ -314,13 +317,17 @@ module.exports = {
       if (blocked) {
         return i.update({ embeds: [kit.notice('danger', 'رُفض تسجيل الإجراء', blocked, { footer: kit.footerLine('🛡️ لم يُسجَّل أي إجراء') })], components: [] });
       }
+      // نؤجل قبل النشر في mod-logs وقبل إرسال الخاص للعضو. الإجراء قد كُتب
+      // في mod_actions قبل أن يخرج التأجيل، فكان المشرف يرى «فشل التفاعل» على
+      // إجراء مسجَّل — ثم يضغط «تأكيد التسجيل» مرة أخرى فيتكرر السجل.
+      await i.deferUpdate();
       const res = getDb().prepare(`INSERT INTO mod_actions (moderator_id, target_id, action_type, reason, duration, evidence) VALUES (?, ?, ?, ?, ?, ?)`)
         .run(draft.actorId, draft.target, draft.type, draft.reason, draft.duration, draft.evidence);
       
       audit.record({ action: 'moderation_action_logged', actorId: draft.actorId, targetId: draft.target, details: { type: draft.type, reason: draft.reason, evidence: draft.evidence, duration: draft.duration, rowId: res.lastInsertRowid }, channelId: i.channelId });
       const e = actionCard(draft, { rowId: res.lastInsertRowid });
       await sendToChannel(i.client, 'mod-logs', { embeds: [e] });
-      await i.update({ embeds: [e], components: [] });
+      await i.editReply({ embeds: [e], components: [] });
       await dm(i.client, draft.target, { embeds: [kit.card({
         title: `🛡️ ${MOD_ACTION_TYPES[draft.type] || 'إجراء إشرافي'}`,
         description: 'تم تسجيل إجراء عليك في السيرفر. إن كنت ترى أن الإجراء غير صحيح، تواصل مع الإدارة عبر التكت.',

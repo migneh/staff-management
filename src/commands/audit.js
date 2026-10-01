@@ -27,9 +27,9 @@ module.exports = {
     },
     {
       data: new SlashCommandBuilder().setName('audit-export').setDescription('تصدير سجلات التدقيق للامتثال')
-        .addUserOption(o => o.setName('user').setDescription('تصفية حسب العضو — optional').setRequired(false))
-        .addStringOption(o => o.setName('action').setDescription('تصفية حسب نوع العملية — optional').setRequired(false))
-        .addIntegerOption(o => o.setName('days').setDescription('عدد Days للأرجاع (الافتراضي: 30)').setMinValue(1).setMaxValue(365)),
+        .addUserOption(o => o.setName('user').setDescription('تصفية حسب العضو — اختياري').setRequired(false))
+        .addStringOption(o => o.setName('action').setDescription('تصفية حسب نوع العملية — اختياري').setRequired(false))
+        .addIntegerOption(o => o.setName('days').setDescription('عدد الأيام للأرجاع (الافتراضي: 30)').setMinValue(1).setMaxValue(365)),
       level: LEVELS.MANAGEMENT,
       async execute(i) {
         if (!settings.featureToggle('auditExport')) return replyEphemeral(i, '❌ هذا أمر معطّل حالياً.', COLORS.danger);

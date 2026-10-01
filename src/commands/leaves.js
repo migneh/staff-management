@@ -275,15 +275,15 @@ function calendarPayload(start, days, viewerId = null) {
     const off = leaveService.weeklyOffDays(policy).includes(new Date(`${date}T00:00:00Z`).getUTCDay());
     if (cov.count >= cov.max) fullDays += 1;
     const people = cov.rows.length
-      ? cov.rows.map(r => {
+      ? truncate(cov.rows.map(r => {
         const label = `${r.user_id === viewerId ? '⭐ ' : ''}<@${r.user_id}> (${LEAVE_TYPES[r.leave_type] || r.leave_type})`;
         if (r.user_id === viewerId) mine += 1;
         return label;
-      }).join('، ').slice(0, 400)
+      }).join('، '), 400)
       : 'لا أحد';
     lines.push(`${off ? '🛌' : '📅'} **${kit.tsDate(date)}** ${kit.coverageBar(cov.count, cov.max)} • ${cov.count}/${cov.max}${off ? ' • راحة أسبوعية' : ''}\n${people}`);
   }
-  const e = embed(`🗓️ تقويم الإجازات — ${kit.tsDate(start)} → ${kit.tsDate(addDays(start, days - 1))}`, lines.join('\n\n').slice(0, 3800), fullDays ? COLORS.warning : COLORS.info);
+  const e = embed(`🗓️ تقويم الإجازات — ${kit.tsDate(start)} → ${kit.tsDate(addDays(start, days - 1))}`, truncate(lines.join('\n\n'), 3800), fullDays ? COLORS.warning : COLORS.info);
   e.addFields(
     { name: 'ملخص', value: `أيام ممتلئة: **${fullDays}**/${days} • الحد الأقصى ${policy.maxConcurrent}${viewerId && mine ? ` • أنت مجاز في **${mine}** يوم` : ''}`, inline: true },
     { name: 'السقف', value: `أطول إجازة ${policy.maxDays} يوم • الراحة بين الإجازات ${policy.minGapDays} يوم`, inline: true },
@@ -364,7 +364,7 @@ function myLeavesPayload(userId, page = 1) {
   });
   if (allow.annual.cap) balanceLines.push(`📅 رصيد ${allow.annual.year}: مستخدم **${allow.annual.used}/${allow.annual.cap}** — متبقٍ **${allow.annual.remaining}**`);
   if (allow.nextAllowedStart) balanceLines.push(`⏳ أقرب بداية مسموحة: ${kit.tsDate(allow.nextAllowedStart)} — ${kit.relativeDays(kit.daysFromToday(allow.nextAllowedStart))}`);
-  e.addFields({ name: '🎯 الرصيد (آخر 90 يوماً)', value: balanceLines.join('\n').slice(0, 1000) });
+  e.addFields({ name: '🎯 الرصيد (آخر 90 يوماً)', value: truncate(balanceLines.join('\n'), 1000) });
 
   if (total) {
     for (const r of items) {
@@ -421,7 +421,7 @@ function balancePayload(userId) {
     allow.nextAllowedStart ? `⏳ أقرب بداية مسموحة: ${kit.tsDate(allow.nextAllowedStart)} (بعد يوم راحة إلزامي)` : null,
   ].filter(Boolean);
   e.addFields({ name: 'ملخص سريع', value: lines.join('\n') });
-  if (history.recent.length) e.addFields({ name: 'آخر الطلبات', value: history.recent.map(r => `\`#${r.id}\` ${STATUS_AR[r.status]} • ${LEAVE_TYPES[r.leave_type]} • ${r.start_date} → ${r.end_date}`).join('\n').slice(0, 1000) });
+  if (history.recent.length) e.addFields({ name: 'آخر الطلبات', value: truncate(history.recent.map(r => `\`#${r.id}\` ${STATUS_AR[r.status]} • ${LEAVE_TYPES[r.leave_type]} • ${r.start_date} → ${r.end_date}`).join('\n'), 1000) });
   e.setFooter({ text: `الحد الأقصى للمجازين في اليوم: ${allow.maxConcurrent} • أطول إجازة: ${allow.maxDays} يوم` });
   return { embeds: [e], components: [new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('leave:newrequest').setLabel('طلب إجازة').setEmoji('🏖️').setStyle(ButtonStyle.Primary),
@@ -474,9 +474,9 @@ function dashboardPayload({ status = null, type = null, page = 1, viewerId = nul
   if (viewerId) components.push(new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('leave:newrequest').setLabel('طلب إجازة').setEmoji('🏖️').setStyle(ButtonStyle.Secondary)));
   if (rows.length) components.push(new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('leave:reviewopen').setPlaceholder('افتح طلباً لعرض التفاصيل والقرار')
     .addOptions(rows.slice(0, 25).map(r => ({
-      label: `#${r.id} • ${STATUS_AR[r.status]}`.slice(0, 100),
+      label: truncate(`#${r.id} • ${STATUS_AR[r.status]}`, 100),
       value: String(r.id),
-      description: `${r.user_id} • ${r.start_date} → ${r.end_date}`.slice(0, 100),
+      description: truncate(`${r.user_id} • ${r.start_date} → ${r.end_date}`, 100),
       emoji: LEAVE_RULES[r.leave_type]?.emoji || '🏖️',
     })))));
   return { payload: { embeds: [e], components }, rows, total: all.length, pages, page: current };
@@ -611,16 +611,23 @@ module.exports = {
         const id = i.options.getInteger('id');
         const reason = i.options.getString('reason') || 'ألغاه صاحب الطلب';
         const db = getDb();
+        // الفحوص أعلاه قراءة محلية (SQLite) فتبقى قبل التأجيل.
         const r = db.prepare("SELECT * FROM leave_requests WHERE id = ? AND user_id = ? AND status IN ('pending', 'approved')").get(id, i.user.id);
         if (!r) return replyEphemeral(i, '❌ الطلب غير موجود أو لا يمكن إلغاؤه (قد يكون منتهياً/ملغياً).', COLORS.danger);
         if (r.status === 'approved' && r.start_date <= today()) return replyEphemeral(i, '❌ بدأت الإجازة بالفعل. اطلب من الإدارة استخدام `/end-leave`.', COLORS.danger);
+        //slash ⇒ لا رسالة مصدر، فالتأجيل الصحيح deferReply لا deferUpdate.
+        // ثلاث عمليات شبكية متسلسلة (members.fetch ثم roles.add/remove ثم تعديل
+        // رسالة الطلب) تأتي بعد كتابة الإلغاء، فيرى العضو «فشل التفاعل» على
+        // إجراء كُتب فعلاً ثم يعيد تشغيله فيصطدم بطلب ملغى أصلاً. الختم بـ
+        // editReply لا reply: بعد التأجيل لا تصلح رسالة ثانية.
+        await i.deferReply({ ephemeral: true });
         db.prepare(`UPDATE leave_requests SET status = 'cancelled', cancelled_by = ?, cancelled_at = datetime('now'), cancel_reason = ?, end_reason = 'admin' WHERE id = ?`).run(i.user.id, reason, r.id);
         const member = await fetchMember(i, i.user.id);
         if (member) await leaveService.syncVacationRole(member);
         const updated = db.prepare('SELECT * FROM leave_requests WHERE id = ?').get(r.id);
         await updateRequestMessage(i.client, updated);
         audit.record({ action: 'leave_cancelled', actorId: i.user.id, targetId: i.user.id, details: { requestId: r.id, reason }, channelId: i.channelId });
-        return replyEphemeral(i, `✅ تم إلغاء طلب الإجازة **#${r.id}**.`, COLORS.success);
+        return i.editReply({ embeds: [embed(null, `✅ تم إلغاء طلب الإجازة **#${r.id}**.`, COLORS.success)], allowedMentions: { parse: [] } });
       },
     },
     {
@@ -631,14 +638,19 @@ module.exports = {
       async execute(i) {
         const id = i.options.getInteger('id');
         const newEnd = i.options.getString('new_end');
+        // extendRequest قراءة/كتابة محلية فقط ⇒ يتحقق قبل التأجيل (فشل سريع
+        // بلا رسالة «جارٍ التنفيذ» flashes).
         const result = leaveService.extendRequest({ id, userId: i.user.id, newEnd, actorId: i.user.id });
         if (!result.ok) return replyEphemeral(i, `❌ ${result.message}${result.hint ? `\n💡 ${result.hint}` : ''}`, COLORS.danger);
+        //slash ⇒ deferReply. بعده شبكة كاملة: تعديل رسالة الطلب (channels.fetch
+        // + messages.fetch + edit) ثم members.fetch ثم مزامنة الرتبة.
+        await i.deferReply({ ephemeral: true });
         const updated = result.row;
         await updateRequestMessage(i.client, updated);
         // إن كانت معتمدة ونشطة، مزامنة الرتبة
         const member = await fetchMember(i, i.user.id);
         if (member && updated.status === 'approved') await leaveService.syncVacationRole(member);
-        return replyEphemeral(i, `✅ تم تمديد الإجازة **#${id}** إلى **${newEnd}**.`, COLORS.success);
+        return i.editReply({ embeds: [embed(null, `✅ تم تمديد الإجازة **#${id}** إلى **${newEnd}**.`, COLORS.success)], allowedMentions: { parse: [] } });
       },
     },
     {
@@ -649,9 +661,15 @@ module.exports = {
       async execute(i) {
         const user = i.options.getUser('user');
         const reason = i.options.getString('reason');
+        // بحث محلي ⇒ قبل التأجيل.
         const r = leaveService.activeForUser(user.id)[0];
         if (!r) return replyEphemeral(i, '❌ لا توجد إجازة نشطة لهذا الإداري.', COLORS.danger);
         const db = getDb();
+        //slash ⇒ deferReply. بعده أربع عمليات شبكية متسلسلة: members.fetch ثم
+        // إزالة رتبة in vacation ثم تعديل رسالة الطلب ثم خاص العضو ثم سجل
+        // المشرفين. ثلاث ثوانٍ لا تكفي، والإذنها يعني «فشل التفاعل» على إنهاء
+        // كُتب فعلاً — يظن المدير الإجازة ما زالت نشطة فيعيد الإنهاء.
+        await i.deferReply({ ephemeral: true });
         db.prepare(`UPDATE leave_requests SET status = 'ended', reviewed_by = ?, review_reason = ?, reviewed_at = datetime('now'), end_reason = 'early' WHERE id = ?`).run(i.user.id, reason, r.id);
         const member = await fetchMember(i, user.id);
         if (member) {
@@ -667,7 +685,7 @@ module.exports = {
         await dm(i.client, user.id, { embeds: [embed('🏁 انتهت إجازتك مبكراً', `تم إنهاء الإجازة **#${r.id}** إدارياً.\n**السبب:** ${reason}`, COLORS.info)] });
         audit.record({ action: 'leave_ended_early', actorId: i.user.id, targetId: user.id, details: { requestId: r.id, reason }, channelId: i.channelId });
         await log(i.client, '🏁 إنهاء إجازة مبكر', `<@${user.id}> — #${r.id} بواسطة <@${i.user.id}>\n${reason}`, COLORS.info);
-        return replyEphemeral(i, `✅ تم إنهاء إجازة <@${user.id}>.`, COLORS.success);
+        return i.editReply({ embeds: [embed(null, `✅ تم إنهاء إجازة <@${user.id}>.`, COLORS.success)], allowedMentions: { parse: [] } });
       },
     },
     {
@@ -738,8 +756,8 @@ module.exports = {
            sub.setName('use')
              .setDescription('استخدام قالب إجازة لإنشاء طلب جديد')
              .addStringOption(o => o.setName('id').setDescription('معرف القالب').setRequired(true))
-             .addStringOption(o => o.setName('reason').setDescription('السبب (يOverride الافتراضي)'))
-             .addIntegerOption(o => o.setName('duration').setDescription('المدة بالأيام (يOverride الافتراضي)'))
+             .addStringOption(o => o.setName('reason').setDescription('السبب (يتجاوز الافتراضي)'))
+             .addIntegerOption(o => o.setName('duration').setDescription('المدة بالأيام (تتجاوز الافتراضي)'))
          ),
        // كان هذا الأمر بلا level وبلا execute فكان يتعطل في كل استدعاء بخطأ غير متوقع؛
        // منطق الأوامر الفرعية كان مسجلاً بالخطأ كمكوّنات (components) لا تُستدعى أبداً من هنا.
@@ -875,6 +893,11 @@ module.exports = {
       if (r.user_id === i.user.id) return replyEphemeral(i, '❌ لا يمكنك الموافقة على طلب إجازتك الخاص. يجب أن يعتمده إداري آخر.', COLORS.danger);
       const vr = leaveService.validate({ userId: r.user_id, leaveType: r.leave_type, start: r.start_date, end: r.end_date, excludeId: r.id, atApproval: true });
       if (!vr.ok) return replyEphemeral(i, `❌ لا يمكن الموافقة: ${vr.message}${vr.hint ? `\n💡 ${vr.hint}` : ''}`, COLORS.danger);
+      // نؤجل قبل أي استدعاء شبكي: members.fetch ثم إضافة رتبة in vacation ثم تعديل
+      // رسالة الطلب. ثلاث عمليات متسلسلة قد تتجاوز نافذة الثلاث ثوانٍ رغم أن
+      // الاعتماد كُتب فعلياً — فيرى المراجع «فشل التفاعل» ولا يعرف أن الطلب اعتُمد.
+      // الفحوص أعلاه كلها قراءة محلية (SQLite) فلا داعي لتأجيلها.
+      await i.deferUpdate();
       db.prepare(`UPDATE leave_requests SET status = 'approved', reviewed_by = ?, reviewed_at = datetime('now') WHERE id = ?`).run(i.user.id, r.id);
       const member = await fetchMember(i, r.user_id);
       const timing = settings.leavePolicy().vacationRoleTiming || 'at_start';
@@ -887,7 +910,8 @@ module.exports = {
       if (r.start_date <= today() && staffService.get(r.user_id)?.status !== 'resigned') staffService.setStatus(r.user_id, 'on_leave');
       audit.record({ action: 'leave_approved', actorId: i.user.id, targetId: r.user_id, details: { requestId: r.id, start: r.start_date, end: r.end_date, vacationRole: roleResult.ok }, channelId: i.channelId });
       const updated = db.prepare('SELECT * FROM leave_requests WHERE id = ?').get(r.id);
-      await i.update({ content: null, embeds: [leaveEmbed(updated, COLORS.success)], components: [] });
+      // بعد deferUpdate لا يصلح update — التفاعل مُقرَّر بالفعل، فالنهاية editReply.
+      await i.editReply({ content: null, embeds: [leaveEmbed(updated, COLORS.success)], components: [] });
       const roleMsg = timing === 'at_start' && r.start_date > today() ? 'ستُفعّل رتبة **in vacation** تلقائياً عند بداية الإجازة.' : roleResult.ok ? 'تم تفعيل رتبة **in vacation**.' : '⚠️ لم أستطع تفعيل رتبة **in vacation** — راجع /setup.';
       await dm(i.client, r.user_id, { embeds: [embed('✅ تمت الموافقة على إجازتك', `من ${kit.tsDate(r.start_date)} إلى ${kit.tsDate(r.end_date)}\n${roleMsg}`, COLORS.success)] });
       return log(i.client, '🏖️ موافقة على إجازة', `<@${r.user_id}> — #${r.id} بواسطة <@${i.user.id}>${roleResult.ok ? '' : '\n⚠️ رتبة in vacation لم تُفعّل'}`, COLORS.success);
@@ -906,12 +930,18 @@ module.exports = {
       if (r.user_id === i.user.id) return replyEphemeral(i, '❌ لا يمكنك مراجعة طلب إجازتك الخاص. يجب أن يراجعه إداري آخر.', COLORS.danger);
       const reason = forms.combine(i);
       if (!reason) return replyEphemeral(i, 'اختر سبباً جاهزاً أو اكتب سبباً مخصصاً قبل الإرسال.', COLORS.danger);
+      // هذا modal submit لا يملك رسالة مصدر، فالتأجيل الصحيح deferReply لا deferUpdate.
+      // بعده شبكة كاملة: تعديل رسالة الطلب (channels.fetch + messages.fetch + edit)
+      // ثم خاص العضو ثم سجل المشرفين — وكلها تفوق ثلاث ثوانٍ متسلسلة.
+      await i.deferReply();
       db.prepare(`UPDATE leave_requests SET status = 'rejected', reviewed_by = ?, review_reason = ?, reviewed_at = datetime('now') WHERE id = ?`).run(i.user.id, reason, r.id);
       audit.record({ action: 'leave_rejected', actorId: i.user.id, targetId: r.user_id, details: { requestId: r.id, reason }, channelId: i.channelId });
       const updated = db.prepare('SELECT * FROM leave_requests WHERE id = ?').get(r.id);
       await updateRequestMessage(i.client, updated, COLORS.danger);
-      // نحاول تحديث رسالة الأزرار إن كانت هي نفسها
-      try { await i.update({ content: null, embeds: [leaveEmbed(updated, COLORS.danger)], components: [] }); } catch { await replyEphemeral(i, `تم رفض الطلب #${r.id}.`, COLORS.danger); }
+      // بعد deferReply لا يصلح update: الرد المؤجل يُعدَّل بـ editReply. جواب
+      // رسالة الأزرار كان هنا مغلّفاً بـ try/catch لأن update على modal submit
+      // يرمي استثناء — لم يعد هناك استثناء بعد التحويل.
+      await i.editReply({ content: null, embeds: [leaveEmbed(updated, COLORS.danger)], components: [] });
       await dm(i.client, r.user_id, { embeds: [embed('❌ تم رفض طلب إجازتك', `**السبب:** ${reason}`, COLORS.danger)] });
       return log(i.client, '🏖️ رفض إجازة', `<@${r.user_id}> — #${r.id} بواسطة <@${i.user.id}>\n${reason}`, COLORS.danger);
     },
@@ -944,6 +974,11 @@ module.exports = {
       const r = result.row;
       const allow = leaveService.allowance(r.user_id, { excludeId: r.id });
       const impact = leaveService.teamImpact(r.user_id, r.suggested_start, r.suggested_end, { excludeId: r.id });
+      // modal submit ⇒ لا رسالة مصدر، فالتأجيل deferReply. كل ما فوقه قراءة
+      // محلية (get/allowance/teamImpact) فبقي قبل التأجيل. بعده ثلاث عمليات
+      // شبكية متسلسلة: خاص العضو ثم تعديل بطاقة الطلب ثم نشر في القناة —
+      // والاقتراح كُتب قبلها، فيرى المراجع «فشل التفاعل» على اقتراح محفوظ.
+      await i.deferReply({ ephemeral: true });
       const sent = await dm(i.client, r.user_id, {
         embeds: [embed('💡 اقترحت الإدارة تواريخ بديلة', [
           `طلبك **#${r.id}** (${LEAVE_TYPES[r.leave_type]}): ${kit.tsDate(r.start_date)} → ${kit.tsDate(r.end_date)}`,
@@ -963,24 +998,32 @@ module.exports = {
       });
       await updateRequestMessage(i.client, r);
       await sendToChannel(i.client, 'leave-requests', { embeds: [embed('💡 اقتراح تواريخ جديد', `<@${r.user_id}> — الطلب **#${r.id}**\nالمقترح: ${r.suggested_start} → ${r.suggested_end}\nبواسطة <@${i.user.id}>${note ? `\n${note}` : ''}`, COLORS.primary)] });
-      if (!sent) return replyEphemeral(i, `⚠️ لم أستطع إرسال رسالة خاصة لـ <@${r.user_id}> (الخاص مغلق؟). الاقتراح محفوظ، وسيراه في /my-leaves.`, COLORS.warning);
-      return replyEphemeral(i, `✅ أُرسل الاقتراح إلى <@${r.user_id}> وظهر في بطاقة الطلب.`, COLORS.success);
+      // بعد deferReply لا يصلح followUp بلا ظهور رسالة «جارٍ التنفيذ»؛ الختم
+      // editReply. النصّان محفوظان حرفياً كما كانا في replyEphemeral.
+      if (!sent) return i.editReply({ embeds: [embed(null, `⚠️ لم أستطع إرسال رسالة خاصة لـ <@${r.user_id}> (الخاص مغلق؟). الاقتراح محفوظ، وسيراه في /my-leaves.`, COLORS.warning)], allowedMentions: { parse: [] } });
+      return i.editReply({ embeds: [embed(null, `✅ أُرسل الاقتراح إلى <@${r.user_id}> وظهر في بطاقة الطلب.`, COLORS.success)], allowedMentions: { parse: [] } });
     },
     'leave:acceptsuggest': async (i, [id]) => {
       const result = leaveService.acceptSuggestion({ id: Number(id), userId: i.user.id });
       if (!result.ok) return replyEphemeral(i, `❌ ${result.message}${result.hint ? `\n💡 ${result.hint}` : ''}`, COLORS.danger);
       const r = result.row;
+      // زر داخل رسالة الخاص ⇒ deferUpdate ينهي التفاعل عند رسالة الزر نفسها.
+      // القبول_local، وبعده شبكتان: تعديل بطاقة الطلب ثم نشر في قناة الطلبات.
+      await i.deferUpdate();
       await updateRequestMessage(i.client, r);
       await sendToChannel(i.client, 'leave-requests', { embeds: [embed('✅ قبِل العضو التواريخ المقترحة', `<@${r.user_id}> — الطلب **#${r.id}** صار: ${r.start_date} → ${r.end_date}\nبانتظار قرار نهائي من المراجع.`, COLORS.success)], components: [reviewRow(r.id)] });
-      return i.update({ embeds: [embed('✅ تم قبول التواريخ المقترحة', `سيُراجع طلبك **#${r.id}** بالتواريخ الجديدة: ${kit.tsDate(r.start_date)} → ${kit.tsDate(r.end_date)}`, COLORS.success)], components: [] });
+      // بعد deferUpdate لا يصلح update (Already acknowledged) ⇒ editReply.
+      return i.editReply({ embeds: [embed('✅ تم قبول التواريخ المقترحة', `سيُراجع طلبك **#${r.id}** بالتواريخ الجديدة: ${kit.tsDate(r.start_date)} → ${kit.tsDate(r.end_date)}`, COLORS.success)], components: [] });
     },
     'leave:declinesuggest': async (i, [id]) => {
       const result = leaveService.declineSuggestion({ id: Number(id), userId: i.user.id });
       if (!result.ok) return replyEphemeral(i, `❌ ${result.message}`, COLORS.danger);
       const r = result.row;
+      // مثل القبول: تأجيل قبل الشبكتين وختم بـ editReply.
+      await i.deferUpdate();
       await updateRequestMessage(i.client, r);
       await sendToChannel(i.client, 'leave-requests', { embeds: [embed('↩️ رفض العضو التواريخ المقترحة', `<@${r.user_id}> — الطلب **#${r.id}** بقي بتواريخه الأصلية (${r.start_date} → ${r.end_date}) ويحتاج قراراً.`, COLORS.warning)], components: [reviewRow(r.id)] });
-      return i.update({ embeds: [embed('↩️ أبقينا طلبك كما هو', `سيراجع المراجع الطلب **#${r.id}** بتواريخه الأصلية.`, COLORS.gray)], components: [] });
+      return i.editReply({ embeds: [embed('↩️ أبقينا طلبك كما هو', `سيراجع المراجع الطلب **#${r.id}** بتواريخه الأصلية.`, COLORS.gray)], components: [] });
     },
     'leave:balance': async (i) => i.reply({ ...balancePayload(i.user.id), ephemeral: true }),
     'leave:dashstatus': async (i, [type, page]) => {
@@ -1018,11 +1061,14 @@ module.exports = {
       if (!i.staffLevel || i.staffLevel < LEVELS.MANAGEMENT) return replyEphemeral(i, '❌ لا تملك الصلاحية.', COLORS.danger);
       const r = getDb().prepare('SELECT * FROM leave_requests WHERE id = ?').get(Number(id));
       if (!r || r.status !== 'pending') return replyEphemeral(i, '❌ الطلب غير معلق.', COLORS.danger);
+      // نؤجل قبل تعديل رسالة الطلب (شبكة) — الإلغاء قد يكون كُتب فعلاً بينما
+      // المستخدم يرى «فشل التفاعل»، فيعيد الضغط ويصطدم بطلب ملغى أصلاً.
+      await i.deferUpdate();
       getDb().prepare(`UPDATE leave_requests SET status='cancelled', cancelled_by=?, cancelled_at=datetime('now'), cancel_reason='ألغته الإدارة من لوحة المراجعة', end_reason='admin' WHERE id=?`).run(i.user.id, r.id);
       const updated = getDb().prepare('SELECT * FROM leave_requests WHERE id=?').get(r.id);
       await updateRequestMessage(i.client, updated);
       audit.record({ action: 'leave_cancelled_by_admin', actorId: i.user.id, targetId: r.user_id, details: { requestId: r.id }, channelId: i.channelId });
-      await i.update({ embeds: [leaveEmbed(updated, COLORS.gray)], components: [] });
+      await i.editReply({ embeds: [leaveEmbed(updated, COLORS.gray)], components: [] });
       await dm(i.client, r.user_id, { embeds: [embed('🚫 أُلغي طلب إجازتك', `ألغت الإدارة الطلب **#${r.id}**.`, COLORS.warning)] });
     },
 
@@ -1071,25 +1117,34 @@ module.exports = {
       const r = getDb().prepare("SELECT * FROM leave_requests WHERE id=? AND user_id=? AND status IN ('pending','approved')").get(Number(id), i.user.id);
       if (!r) return replyEphemeral(i, '❌ لا يمكن إلغاء هذا الطلب.', COLORS.danger);
       if (r.status === 'approved' && r.start_date <= today()) return replyEphemeral(i, '❌ بدأت الإجازة — اطلب من الإدارة إنهاءها.', COLORS.danger);
+      // ثلاث عمليات شبكية متسلسلة قبل أي رد: members.fetch ثم مزامنة رتبة
+      // الإجازة (roles.add/remove) ثم تعديل رسالة الطلب. التأجيل هنا يعني أن
+      // العضو يرى «جارٍ التنفيذ» بدل «فشل التفاعل» على إجراء كُتب فعلاً.
+      await i.deferUpdate();
       getDb().prepare(`UPDATE leave_requests SET status='cancelled', cancelled_by=?, cancelled_at=datetime('now'), cancel_reason='ألغاه صاحب الطلب' WHERE id=?`).run(i.user.id, r.id);
       const member = await fetchMember(i, i.user.id);
       if (member) await leaveService.syncVacationRole(member);
       await updateRequestMessage(i.client, getDb().prepare('SELECT * FROM leave_requests WHERE id=?').get(r.id));
-      await i.update({ embeds: [embed('✅ تم الإلغاء', `أُلغي الطلب **#${id}**.`, COLORS.success)], components: [] });
+      await i.editReply({ embeds: [embed('✅ تم الإلغاء', `أُلغي الطلب **#${id}**.`, COLORS.success)], components: [] });
     },
     'leave:cancelpick': async (i) => i.update({ embeds: [embed(null, 'تم الإلغاء.', COLORS.gray)], components: [] }),
     'leave:extendmodal': async (i, [id]) => {
       const newEnd = i.fields.getTextInputValue('new_end').trim();
+      // extendRequest محلي ⇒ خطأ التحقق قبل التأجيل (لا وميض «جارٍ التنفيذ»).
       const result = leaveService.extendRequest({ id: Number(id), userId: i.user.id, newEnd, actorId: i.user.id });
       if (!result.ok) return replyEphemeral(i, `❌ ${result.message}${result.hint ? `\n💡 ${result.hint}` : ''}`, COLORS.danger);
+      // modal submit ⇒ deferReply. التمديد كُتب قبل تعديل بطاقة الطلب، وتعديل
+      // الرسالة شبكة (channels.fetch + messages.fetch + edit) فيرى العضو
+      // «فشل التفاعل» على تمديد محفوظ.
+      await i.deferReply({ ephemeral: true });
       await updateRequestMessage(i.client, result.row);
-      return replyEphemeral(i, `✅ تم تمديد الطلب **#${id}** إلى **${newEnd}**.`, COLORS.success);
+      return i.editReply({ embeds: [embed(null, `✅ تم تمديد الطلب **#${id}** إلى **${newEnd}**.`, COLORS.success)], allowedMentions: { parse: [] } });
     },
 'leave:pending': async (i, [page]) => {
        const { items, total, pages } = leaveService.list({ status: 'pending', perPage: 4, page: Number(page) });
        if (!total) return i.update({ embeds: [embed('✅ لا توجد طلبات', 'انتهت المراجعة.', COLORS.success)], components: [] });
        // نعيد بناء PAGE
-       await i.update({ embeds: [embed(`⏳ طلبات معلقة — página ${page}/${pages}`, `العدد: **${total}**`, COLORS.warning)], components: [kit.navRow({ prefix: 'leave:pending', page: Number(page), pages })] });
+       await i.update({ embeds: [embed(`⏳ طلبات معلقة — صفحة ${page}/${pages}`, `العدد: **${total}**`, COLORS.warning)], components: [kit.navRow({ prefix: 'leave:pending', page: Number(page), pages })] });
        for (const r of items) {
          await i.followUp({ embeds: [reviewCard(r)], components: [reviewRow(r.id)], ephemeral: true });
        }

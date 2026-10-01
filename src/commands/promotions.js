@@ -147,11 +147,17 @@ module.exports = {
       const needed = rule.approvals || 1;
       const { recorded, count } = promo.recordApproval(r.id, i.user.id);
       if (!recorded) return replyEphemeral(i, `ℹ️ سجّلت موافقتك مسبقاً على الطلب #${r.id} (${count}/${needed}).`, COLORS.info);
+      // نؤجل قبل أي استدعاء شبكي: في فرع النصاب تعديل بطاقة الطلب، وفي فرع
+      // الاعتماد members.fetch ثم applyRankRoles. سلسلة قد تتجاوز ثلاث ثوانٍ
+      // بعد أن كُتبت الترقية — فيرى المراجع فشلاً على ترقية نجحت.
+      await i.deferUpdate();
       if (count < needed) {
         audit.record({ action: 'promotion_approval_recorded', actorId: i.user.id, targetId: r.user_id, details: { requestId: r.id, count, needed }, channelId: i.channelId });
         const fresh = promo.getRequest(r.id);
-        if (i.message) await i.message.edit({ embeds: [requestEmbed(fresh)], components: [reviewRow(r.id)] }).catch(() => {});
-        return replyEphemeral(i, `✅ سُجّلت موافقتك (${count}/${needed}).\nبانتظار ${needed - count} موافقة إضافية من: ${rule.approvers}.`, COLORS.success);
+        // i.message.edit كان يترك حالة «جارٍ التنفيذ» بلا جواب بعد التأجيل؛
+        // editReply هو النهاية الصحيحة لردّ مؤجَّل، ثم ملاحظة خاصة عبر followUp.
+        await i.editReply({ embeds: [requestEmbed(fresh)], components: [reviewRow(r.id)] });
+        return i.followUp({ embeds: [embed(null, `✅ سُجّلت موافقتك (${count}/${needed}).\nبانتظار ${needed - count} موافقة إضافية من: ${rule.approvers}.`, COLORS.success)], ephemeral: true, allowedMentions: { parse: [] } });
       }
 
       promo.review(r.id, 'approved', i.user.id, null);
@@ -160,7 +166,7 @@ module.exports = {
       const member = await i.guild.members.fetch(r.user_id).catch(() => null);
       const rolesOk = member ? await staffService.applyRankRoles(member, s.team, rule.to) : false;
 
-      await i.update({ embeds: [requestEmbed(promo.getRequest(r.id), COLORS.success)], components: [] });
+      await i.editReply({ embeds: [requestEmbed(promo.getRequest(r.id), COLORS.success)], components: [] });
       await dm(i.client, r.user_id, { embeds: [embed('🎉 مبروك الترقية!', `تمت ترقيتك إلى **${rule.to}**`, COLORS.success)] });
       await sendToChannel(i.client, 'staff-updates', { embeds: [embed('🎉 ترقية جديدة', `<@${r.user_id}> — **${rule.from} → ${rule.to}**\nبقرار <@${i.user.id}>`, COLORS.success)] });
       return log(i.client, '📈 ترقية', `<@${r.user_id}>: ${rule.from} → ${rule.to} بواسطة <@${i.user.id}>${rolesOk ? '' : '\n⚠️ لم يتم تعديل الرتب تلقائياً — عدّلها يدوياً'}`, COLORS.success);
@@ -176,10 +182,13 @@ module.exports = {
       if (r.user_id === i.user.id) return replyEphemeral(i, '❌ لا يمكنك رفض طلب ترقيتك الخاص.', COLORS.danger);
       const reason = forms.combine(i);
       if (!reason) return replyEphemeral(i, 'اختر سبباً جاهزاً أو اكتب سبباً مخصصاً قبل الإرسال.', COLORS.danger);
+      // modal submit بلا رسالة مصدر ⇒ deferReply. بعده تعديل بطاقة الطلب ثم
+      // إرسال الخاص للعضو، وكلاهما شبكة متسلسلة بعد كتابة الرفض.
+      await i.deferReply();
       audit.record({ action: 'promotion_rejected', actorId: i.user.id, targetId: r.user_id, details: { requestId: r.id, reason }, channelId: i.channelId });
       promo.review(r.id, 'rejected', i.user.id, reason);
       if (i.message) await i.message.edit({ embeds: [requestEmbed(promo.getRequest(r.id), COLORS.danger)], components: [] }).catch(() => {});
-      await replyEphemeral(i, `تم رفض الطلب #${r.id}.`, COLORS.danger);
+      await i.editReply({ embeds: [embed(null, `تم رفض الطلب #${r.id}.`, COLORS.danger)], allowedMentions: { parse: [] } });
       await dm(i.client, r.user_id, { embeds: [embed('❌ تم رفض طلب الترقية', `**السبب:** ${reason}\nيمكنك التقديم مجدداً.`, COLORS.danger)] });
       return log(i.client, '📈 رفض ترقية', `<@${r.user_id}> — #${r.id} بواسطة <@${i.user.id}>\n${reason}`, COLORS.danger);
     },

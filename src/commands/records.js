@@ -6,7 +6,7 @@ const { getDb } = require('../database');
 const staffService = require('../services/staff');
 const activity = require('../services/activity');
 const audit = require('../services/audit');
-const { embed, COLORS, replyEphemeral, dm, log, discordTs, sendToChannel, arDigits } = require('../utils');
+const { embed, COLORS, replyEphemeral, dm, log, discordTs, sendToChannel, arDigits, truncate } = require('../utils');
 const staffSync = require('../services/staffSync');
 const { snapshot } = staffSync;
 
@@ -25,13 +25,14 @@ function recordEmbed(userId, { includeSecret }) {
   const rankRows = staffService.rankHistory(userId, 5);
   if (rankRows.length) {
     e.addFields({
+      // كل قيمة حقل عبر truncate: القصّ الخام كان يقطع الطابع <t:…:d> أو شريط **.
       name: '📜 تاريخ الرتب',
-      value: rankRows.map(r => {
+      value: truncate(rankRows.map(r => {
         const to = r.change_type === 'remove' || r.change_type === 'left_guild' ? r.from_rank : r.to_rank;
         const from = r.from_rank && r.from_rank !== to ? `${r.from_rank} → ` : '';
         const who = r.actor_id ? ` • <@${r.actor_id}>` : '';
         return `${RANK_CHANGE[r.change_type] || r.change_type}: ${from}**${to || '—'}** • ${discordTs(r.created_at, 'd')}${who}`;
-      }).join('\n').slice(0, 1024),
+      }).join('\n'), 1024),
     });
   }
   // إن كان تتبّع النشاط موقوفاً فأي رقم مشتق من نشاطك ناقص — نقوله للعضو
@@ -44,10 +45,10 @@ function recordEmbed(userId, { includeSecret }) {
   }
   e.addFields({
     name: `⚠️ الإنذارات (${warns.length})`,
-    value: warns.length ? warns.map(w => `${WARNING_TYPES[w.warning_type]?.emoji} **#${w.id} ${WARNING_TYPES[w.warning_type]?.label}**${w.voided_at ? ' ⚖️ ملغى بالاستئناف' : ''} — ${w.reason} • ${discordTs(w.created_at, 'd')} • <@${w.issued_by}>`).join('\n').slice(0, 1024) : 'لا يوجد',
+    value: warns.length ? truncate(warns.map(w => `${WARNING_TYPES[w.warning_type]?.emoji} **#${w.id} ${WARNING_TYPES[w.warning_type]?.label}**${w.voided_at ? ' ⚖️ ملغى بالاستئناف' : ''} — ${w.reason} • ${discordTs(w.created_at, 'd')} • <@${w.issued_by}>`).join('\n'), 1024) : 'لا يوجد',
   }, {
     name: `📝 الملاحظات (${notes.length})`,
-    value: notes.length ? notes.map(n => `${NOTE_TYPES[n.note_type]?.emoji}${n.is_secret ? '🔒' : ''} ${n.content} • ${discordTs(n.created_at, 'd')}`).join('\n').slice(0, 1024) : 'لا يوجد',
+    value: notes.length ? truncate(notes.map(n => `${NOTE_TYPES[n.note_type]?.emoji}${n.is_secret ? '🔒' : ''} ${n.content} • ${discordTs(n.created_at, 'd')}`).join('\n'), 1024) : 'لا يوجد',
   });
   return e;
 }
@@ -57,7 +58,7 @@ module.exports = {
     {
       data: new SlashCommandBuilder().setName('add-note').setDescription('إضافة ملاحظة على إداري')
         .addUserOption(o => o.setName('user').setDescription('الإداري').setRequired(true))
-        .addStringOption(o => o.setName('type').setDescription('النوع').setRequired(true).addChoices({ name: '🟢 إيجابية (+5)', value: 'positive' }, { name: '🟡 سلبية (-10)', value: 'negative' }))
+        .addStringOption(o => o.setName('type').setDescription('النوع').setRequired(true).addChoices({ name: '🟢 إيجابية', value: 'positive' }, { name: '🟡 سلبية', value: 'negative' }))
         .addStringOption(o => o.setName('content').setDescription('نص الملاحظة').setRequired(true).setMaxLength(500))
         .addBooleanOption(o => o.setName('secret').setDescription('ملاحظة سرية (للإدارة فقط)')),
       level: LEVELS.SUPERVISOR,
@@ -72,7 +73,8 @@ module.exports = {
         const secret = i.options.getBoolean('secret') ? 1 : 0;
         const target = staffService.get(user.id);
         if (!target) return replyEphemeral(i, '❌ هذا العضو غير مسجل كإداري.', COLORS.danger);
-        // ملاحظة إيجابية تمنح +5 في الحساب — لا يمكن للإداري تسجيلها على نفسه.
+        // لا يمكن للإداري تسجيلها على نفسه. ونظام النقاط محذوف: الملاحظة لا تمنح
+        // ولا تخصم أي رصيد — /note تعد بشيء لنفسها، فالوعد هنا يجب أن يطابقها.
         if (user.id === i.user.id) return replyEphemeral(i, '❌ لا يمكنك إضافة ملاحظة على نفسك.', COLORS.danger);
         const res = getDb().prepare('INSERT INTO staff_notes (user_id, note_type, content, is_secret, added_by) VALUES (?, ?, ?, ?, ?)').run(user.id, type, content, secret, i.user.id);
         audit.record({ action: 'staff_note_added', actorId: i.user.id, targetId: user.id, details: { type, secret: !!secret, rowId: res.lastInsertRowid }, channelId: i.channelId });

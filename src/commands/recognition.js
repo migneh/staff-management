@@ -133,6 +133,10 @@ async function decide(i, id, status) {
   if (!result.changes) return replyEphemeral(i, '❌ تمت مراجعة هذا الترشيح مسبقاً.', COLORS.danger);
 
   const updated = db.prepare('SELECT * FROM recognition_nominations WHERE id = ?').get(row.id);
+  // نؤجل قبل النشر في staff-wins وقبل إرسال الخاص. الحالة كُتبت قبل التأجيل،
+  // فكان المراجع يرى «فشل التفاعل» على اعتماد نجح — ثم يضغط مرة أخرى فيصطدم
+  // بالحارس «تمت مراجعة هذا الترشيح مسبقاً» ولا يعرف أن الاعتماد نجح.
+  await i.deferUpdate();
   audit.record({
     action: `recognition_${status}`,
     actorId: i.user.id,
@@ -144,7 +148,9 @@ async function decide(i, id, status) {
   // لا شيء يُنشر في الرفض: لا إعلان ولا إنجاز ولا رصيد.
   if (status === 'approved') {
     if (!staffService.get(updated.target_id)) {
-      return replyEphemeral(i, '⚠️ اعتُمد الترشيح لكن العضو لم يعد مسجلاً، فلم يُنشر الإنجاز.', COLORS.warning);
+      // بعد deferUpdate لا يصلح reply — editReply يُنهي الرد المؤجل. ترك
+      // replyEphemeral هنا كان يترك رسالة الزر معلّقة على «جارٍ التنفيذ» للأبد.
+      return i.editReply({ embeds: [embed(null, '⚠️ اعتُمد الترشيح لكن العضو لم يعد مسجلاً، فلم يُنشر الإنجاز.', COLORS.warning)], allowedMentions: { parse: [] } });
     }
     await sendToChannel(i.client, 'staff-wins', { embeds: [announcementEmbed(updated, i.user.id)] });
     await dm(i.client, updated.target_id, {
@@ -156,6 +162,6 @@ async function decide(i, id, status) {
     });
   }
 
-  await i.update({ embeds: [nominationEmbed(updated, status === 'approved' ? COLORS.success : COLORS.gray)], components: [] });
+  await i.editReply({ embeds: [nominationEmbed(updated, status === 'approved' ? COLORS.success : COLORS.gray)], components: [] });
   return null;
 }

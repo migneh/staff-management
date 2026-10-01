@@ -8,7 +8,7 @@ const {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, ComponentType,
 } = require('discord.js');
 
-const { arDigits: AR_DIGITS, COLORS, embed, truncate } = require('../utils');
+const { arDigits: AR_DIGITS, COLORS, embed, truncate, clipRich } = require('../utils');
 
 /** `<t:1700000000:D>` — تاريخ محلي في جهاز القارئ */
 function tsDate(value, style = 'D') {
@@ -236,10 +236,8 @@ function chunkLines(lines, maxChars = 1024) {
   return out;
 }
 
-function trim(text, n) {
-  const s = String(text ?? '');
-  return s.length > n ? `${s.slice(0, Math.max(0, n - 1))}…` : s;
-}
+/** قصّ واحد للمشروع كله — ما دام trim هنا وtruncate في utils تفوّضان إلى clipRich. */
+function trim(text, n) { return clipRich(text, n); }
 
 function bullet(items, { prefix = '•', max = 10 } = {}) {
   const list = (items || []).filter(Boolean);

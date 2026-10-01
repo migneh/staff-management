@@ -478,12 +478,65 @@ async function syncVacationRole(member, date = today()) {
   return shouldHave ? staffService.addVacationRole(member) : staffService.removeVacationRole(member);
 }
 
+// ===== يوميات التذكير: مطالبة ذرّية واحدة لكل (طلب، نوع) =====
+
+/** جملة واحدة: «احجز هذا النوع لهذا الطلب إن لم يكن محجوزاً». */
+const CLAIM_REMINDER_SQL = `UPDATE leave_requests
+   SET reminders_sent = CASE
+     WHEN COALESCE(reminders_sent, '') = '' THEN ?
+     ELSE reminders_sent || ',' || ?
+   END
+ WHERE id = ?
+   AND instr(',' || COALESCE(reminders_sent, '') || ',', ',' || ? || ',') = 0`;
+
+/**
+ * claimReminder(id, kind) — هل ربحنا حق إرسال هذا التذكير الآن؟
+ *
+ * الشرط والكتابة في **جملة واحدة**، و`changes > 0` هو إشارة الفوز بالسباق
+ * (نفس نمط supportRatings.record: قيد فريد + changes). السبب أن النسخة
+ * السابقة كانت قراءة في JS ثم كتابة كاملة للعمود، فأي كتابة ثانية من لقطة
+ * قديمة تمحو الأولى. الحالة الحقيقية التي كسرت المستخدم:
+ *
+ *   إجازة يوم واحد (start = end = غد) تُطلق 'start' ثم 'end' في الدورة نفسها،
+ *   وكلاهما يقرأ `r.reminders_sent` نفسه المُلتقط قبل الحلقة — فكتابة 'end'
+ *   تمحو 'start'، فتبعث الدورة التالية (أو تشغيل ثانٍ متداخل) تذكير البداية
+ *   **مرة ثانية** لنفس العضو في نفس اليوم.
+ *
+ * بجعل شرط «لم يُرسل بعد» جزءاً من جملة التحديث نفسها (فحص `instr` على
+ * ",key,") لا خطوةً تسبقها، فلا توجد نافذة سباق بين القراءة والكتابة: من
+ * يكتب أولاً يرسل، ومن جاء بعده يرى `changes = 0` فيصمت.
+ *
+ * ملاحظة للمالكين: `leave_reminders` (جدول حقيقي + INSERT OR IGNORE) هو
+ * الشكل الأنظف، ويحتاج DDL في src/database.js — انظر تقرير التغيير. عند
+ * إضافته يكفي استبدال جسم هذه الدالة؛ الاستدعاءات لا تتغيّر.
+ */
+function claimReminder(id, kind) {
+  const key = String(kind == null ? '' : kind).trim();
+  const leaveId = Number(id);
+  if (!key || !Number.isInteger(leaveId) || leaveId <= 0) return false;
+  return getDb().prepare(CLAIM_REMINDER_SQL).run(key, key, leaveId, key).changes > 0;
+}
+
+/** يوميات تذكير طلب واحد كما هي محفوظة (للفحص والتشخيص). */
+function remindersFor(id) {
+  const row = getDb().prepare('SELECT reminders_sent FROM leave_requests WHERE id = ?').get(Number(id));
+  return String(row?.reminders_sent || '').split(',').filter(Boolean);
+}
+
+/** هل حُجز هذا النوع من قبل؟ (قراءة فقط — لا تحجز) */
+function hasReminder(id, kind) {
+  const key = String(kind == null ? '' : kind).trim();
+  if (!key) return false;
+  return remindersFor(id).includes(key);
+}
+
+/**
+ * اسم قديم محفوظ للتوافق مع أي مستدعٍ سابق.
+ * الوسيط `current` (لقطة العمود) يُتجاهل عمداً: الاعتماد عليه هو العيب نفسه.
+ */
 function markReminder(id, current, key) {
-   const sent = new Set(String(current || '').split(',').filter(Boolean));
-   if (sent.has(key)) return false;
-   sent.add(key);
-   getDb().prepare('UPDATE leave_requests SET reminders_sent = ? WHERE id = ?').run([...sent].join(','), id);
-   return true;
+  void current;
+  return claimReminder(id, key);
 }
 
 /**
@@ -563,7 +616,7 @@ function useLeaveTemplate(templateId, userId, overrides = {}) {
 
 module.exports = {
    concurrentApproved, userHasOverlap, approvedForUser, activeForUser, pendingForUser, get, list,
-   hasApprovedCover, syncVacationRole, markReminder,
+   hasApprovedCover, syncVacationRole, markReminder, claimReminder, remindersFor, hasReminder,
    durationDays, noticeHours, daysInRangeForUser, minGapViolated, validate, previewRequest,
    spanDays, countedDays, skippedOffDays, weeklyOffDays, offDaysLabel,
    usageInRange, annualUsage, allowance, teamCoverage, teamImpact, memberHistory,

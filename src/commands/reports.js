@@ -16,23 +16,51 @@ const kit = require('../ui/kit');
 /** النافذة الموحّدة للترتيب — أسبوعان أعدل من 7 أيام في الفرق الصغيرة */
 const LEADERBOARD_WINDOW_DAYS = 14;
 
-function teamEmbed(teamKey, rows) {
-  const workMap = rows.map(r => {
-    const count = r.work.closed ?? r.work.actions ?? 0;
-    const detail = r.staff.team === 'support'
-      ? `${count} تكت مغلق • متوسط ${r.work.avgDuration ?? '—'} د • ${r.work.avgRating ?? '—'} ⭐`
-      : `${count} إجراء • ${r.work.activeDays} أيام عمل`;
-    return { user: r.staff.user_id, rank: r.staff.rank, status: r.staff.status, work: count, detail };
-  });
-  const avg = rows.length ? Math.round(rows.reduce((s, r) => s + r.work.closed + r.work.actions, 0) / rows.length) : 0;
-  const e = embed(`👥 تقرير ${TEAMS[teamKey]}`, `الأعضاء: **${rows.length}** • متوسط العمل: **${avg}**`, COLORS.info);
-  const lines = workMap.sort((a, b) => b.work - a.work).map(r => `<@${r.user}> • ${r.rank} • **${r.work}** • ${STATUS[r.status]}${r.status !== 'on_leave' && r.status !== 'resigned' && r.status !== 'removed' && r.status !== 'suspended' && hoursSinceFromMember(r) > 72 ? ' ⚠️' : ''}`);
-  for (let k = 0; k < lines.length; k += 15) e.addFields({ name: k === 0 ? 'الأعضاء' : '\u200b', value: lines.slice(k, k + 15).join('\n') });
-  return e;
-}
+/** الحالات التي لا يُنبَّه فيها على الخمول — العضو غير موجود أصلاً في القائمة */
+const ABSENT_OK_STATUSES = ['on_leave', 'resigned', 'removed', 'suspended'];
 
-function hoursSinceFromMember(r) {
-  return 0;
+/** تنبيه الخمول: بلا عمل مُسجّل منذ ثلاثة أيام */
+const IDLE_WARNING_HOURS = 72;
+
+/**
+ * تقرير فريق — صف واحد لكل إداري.
+ *
+ * عقد الصفوف هو عقد reports.individual: { staff, raw, ... } وليس { staff, work }
+ * (هذا شكل load.teamLoad). كان الكود يقرأ r.work فسقط على أول صف بـ TypeError
+ * لكل حجم فريق مهما صغر. والبناء يمرّ عبر addLineFields لا عبر addFields مباشرة،
+ * لأن ديسكورد يرفض ما زاد على 25 حقلاً أو 6000 حرف — وكان الفريق بـ 376 عضواً
+ * يُسقط الرد كاملاً. من لا يتّسع حقاً يُعلن في حقل مستقل بدل إخفائه صامتاً.
+ */
+function teamEmbed(teamKey, rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const workMap = list.map(r => {
+    const staff = r?.staff || {};
+    const raw = r?.raw || {};
+    // الدعم يُقاس بالتكتات المغلقة، والإشراف بالإجراءات — لا بخلط الحقلين.
+    const count = staff.team === 'support' ? num(raw.tickets) : num(raw.actions);
+    return {
+      user: staff.user_id, rank: staff.rank, status: staff.status, work: count,
+      idleHours: num(r?.lastActivityHours),
+    };
+  });
+  const avg = workMap.length ? Math.round(workMap.reduce((s, r) => s + r.work, 0) / workMap.length) : 0;
+  const e = embed(`👥 تقرير ${TEAMS[teamKey] || teamKey}`, `الأعضاء: **${list.length}** • متوسط العمل: **${avg}**`, COLORS.info);
+  const lines = workMap
+    .sort((a, b) => b.work - a.work)
+    .map(r => `<@${r.user}> • ${r.rank || '—'} • **${r.work}** • ${STATUS[r.status] || r.status || '—'}`
+      + (!ABSENT_OK_STATUSES.includes(r.status) && r.idleHours > IDLE_WARNING_HOURS ? ' ⚠️' : ''));
+
+  // 22 حقلاً + حقل الإخفاء = 24، فتبقى حاشية تحت حد الـ 25 حتى لو أُضيف حقل لاحقاً.
+  const { lines: shown } = addLineFields(e, 'الأعضاء', lines, { max: 22, budget: EMBED_TOTAL_LIMIT - 400 });
+  const omitted = lines.length - shown;
+  if (omitted > 0) {
+    e.addFields({
+      name: '⚠️ أعضاء لم يظهروا',
+      value: `لم يظهر **${omitted}** عضواً من أصل **${lines.length}** — حد ديسكورد 25 حقلاً و6000 حرف للرسالة الواحدة.`,
+      inline: false,
+    });
+  }
+  return e;
 }
 
 /** قراءة رقم من سجل قد يعود نصاً أو null (SQLite REAL/INTEGER) */
@@ -56,23 +84,27 @@ const EMBED_TOTAL_LIMIT = 6000;
  * حقول متتابعة: يقسّم الأسطر على حد ديسكورد للحقل (1024 حرفاً) وعلى حد 25 حقلاً،
  * ويستخدم محرف المسافة الصفرية كاسم للحقول التكميلية حتى لا يفسد تنسيق الشبكة.
  * يوقف الإضافة عند بلوغ حد 6000 حرف للرسالة كاملة حتى لا يُرفض الرد بالكامل.
+ * يُرجع { fields, lines }: عدد الحقول المضافة وعدد **الأسطر** التي ظهرت فعلاً،
+ * ليمكن للمُنشئ أن يصرّح بما سقط بدل إنكاره.
  */
 function addLineFields(e, name, lines, { inline = false, max = 25, budget = EMBED_TOTAL_LIMIT - 1200 } = {}) {
   const blocks = kit.chunkLines(lines, 1000);
-  if (!blocks.length) return 0;
+  if (!blocks.length) return { fields: 0, lines: 0 };
   let label = name;
   let used = 0;
   let added = 0;
+  let rendered = 0;
   for (const block of blocks) {
     if (added >= max) break;
     const spent = used + block.length + 260;
     if (added > 0 && spent > budget) break;
     e.addFields({ name: label, value: kit.clip(block, 1024), inline });
+    rendered += block.split('\n').length;
     used = spent;
     added += 1;
     label = '\u200b';
   }
-  return added;
+  return { fields: added, lines: rendered };
 }
 
 /** سطر «متوسط المدة / التقييم» لفريق الدعم — الحقول نفسها في تقرير الفريق */

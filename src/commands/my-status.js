@@ -9,7 +9,7 @@ const score = require('../services/score');
 const clock = require('../clock');
 const tasks = require('../services/tasks');
 const leaveService = require('../services/leaves');
-const { embed, COLORS, replyEphemeral, arDigits, progressBar, tsRelative } = require('../utils');
+const { embed, COLORS, replyEphemeral, arDigits, progressBar, tsRelative, truncate } = require('../utils');
 const kit = require('../ui/kit');
 
 module.exports = {
@@ -99,7 +99,7 @@ module.exports = {
           let taskValue = `**${pendingTaskCount}** مهام معلقة\n${taskSummary.join(' • ')}`;
           if (nextTask) {
             const dueIn = clock.daysBetween(today(), nextTask.due_date);
-            taskValue += `\n⏳ القادمة: #${nextTask.id} — ${nextTask.title.slice(0, 50)} (${dueIn >= 0 ? `${dueIn} يوم متبقي` : `${Math.abs(dueIn)} يوم متأخر`})`;
+            taskValue += `\n⏳ القادمة: #${nextTask.id} — ${truncate(nextTask.title, 50)} (${dueIn >= 0 ? `${dueIn} يوم متبقي` : `${Math.abs(dueIn)} يوم متأخر`})`;
           }
           
           e.addFields({ name: '📋 مهامك الحالية', value: taskValue, inline: false });
@@ -126,7 +126,7 @@ module.exports = {
         }
         
         if (leaveBalance.length > 0) {
-          e.addFields({ name: '🏖️ رصيد الإجازات', value: leaveBalance.slice(0, 8).join('\n'), inline: false });
+          e.addFields({ name: '🏖️ رصيد الإجازات', value: truncate(leaveBalance.slice(0, 8).join('\n'), 1024), inline: false });
         }
         
         // Add promotion info if applicable
@@ -137,7 +137,7 @@ module.exports = {
           
 e.addFields({
               name: `🎯 الترقية القادمة: ${promoEval.rule.to}`,
-              value: `${progressBar(passedChecks, totalChecks, 10)} **${passedChecks}/${totalChecks}** شرط مكتمل (${progressPercent}%)\n${promoEval.eligible ? '✅ مؤهل للتقدم' : '❌ غير مؤهل actuellement'}\n${promoEval.eligible ? '✅ متوافق مع متطلبات الترقية' : '❌ تحتاج لتحسين الأداء للترقية'}`,
+              value: `${progressBar(passedChecks, totalChecks, 10)} **${passedChecks}/${totalChecks}** شرط مكتمل (${progressPercent}%)\n${promoEval.eligible ? '✅ مؤهل للتقدم' : '❌ غير مؤهل حالياً'}\n${promoEval.eligible ? '✅ متوافق مع متطلبات الترقية' : '❌ تحتاج لتحسين الأداء للترقية'}`,
             });
             
           if (detailed) {
@@ -149,7 +149,7 @@ e.addFields({
             
             e.addFields({
               name: '📋 تفاصيل المتطلبات',
-              value: reqDetails.slice(0, 1024),
+              value: truncate(reqDetails, 1024),
             });
           }
         } else {
@@ -211,7 +211,7 @@ e.addFields({
             }).join('\n');
             e.addFields({
               name: '📈 تفصيل Score',
-              value: factorDetails.slice(0, 1024),
+              value: truncate(factorDetails, 1024),
             });
           }
         }
