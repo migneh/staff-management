@@ -117,8 +117,20 @@ module.exports = {
           });
         }
 
+        // lastCheck عمود من قاعدة البيانات لا نتيجة verify(): القيمة -1 تعني
+        // «تعذّر الفحص» و-1 truthy، فكان `lastCheck.ok ? '🟢' : '🔴'` يعرض
+        // المجهول على أنه سليم. ثلاث حالات صريحة.
+        const checkState = (c) => (c == null ? null
+          : Number(c.ok) > 0 ? { emoji: '🟢', label: 'فحص سليم' }
+            : Number(c.ok) < 0 ? { emoji: '🟠', label: 'لم يُتحقَّق' }
+              : { emoji: '🔴', label: 'فحص فاشل' });
+        const lastCheckLabel = checkState(lastCheck);
+        const lastCheckText = lastCheckLabel
+          ? `${lastCheckLabel.emoji} ${lastCheckLabel.label} — ${String(lastCheck.detail).slice(0, 70)}`
+          : '';
+
         e.addFields(
-          { name: '💾 آخر نسخة احتياطية', value: lastBackup ? `${kit.tsRelative(lastBackup.modifiedAt)} · ${(lastBackup.size / 1024 / 1024).toFixed(2)} م.ب${lastCheck ? `\n${lastCheck.ok ? '🟢 فحص سليم' : '🔴 فحص فاشل'} — ${String(lastCheck.detail).slice(0, 70)}` : ''}` : 'لا توجد — شغّل `/backup`', inline: true },
+          { name: '💾 آخر نسخة احتياطية', value: lastBackup ? `${kit.tsRelative(lastBackup.modifiedAt)} · ${(lastBackup.size / 1024 / 1024).toFixed(2)} م.ب${lastCheckText ? `\n${lastCheckText}` : ''}` : 'لا توجد — شغّل `/backup`', inline: true },
           { name: '⚙️ الإعداد', value: `رتب ${st.rolesDone}/${st.rolesTotal} • قنوات ${st.channelsDone}/${st.channelsTotal}`, inline: true },
         )
         .setFooter({ text: `المنطقة الزمنية: ${clock.TZ} • آخر تحديث` });

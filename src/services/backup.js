@@ -4,6 +4,24 @@ const path = require('path');
 const config = require('../config');
 const { getDb } = require('../database');
 
+/**
+ * قائمة ملفات النسخ مرتّبة من الأحدث إلى الأقدم (mtime وقت الكتابة).
+ * تُلتقط بعد نجاح فحص النسخة الجديدة فقط.
+ */
+function snapshotBackups() {
+  return fs.readdirSync(config.backup.dir)
+    .filter(name => /^staff-.*\.db$/.test(name))
+    .map(name => ({ name, time: fs.statSync(path.join(config.backup.dir, name)).mtimeMs }))
+    .sort((a, b) => b.time - a.time);
+}
+
+/** تقليم النسخ القديمة الزائدة عن `keep` — بعد نجاح فحص النسخة الجديدة فقط. */
+function pruneBackups(files) {
+  for (const file of files.slice(Math.max(1, config.backup.keep))) {
+    try { fs.unlinkSync(path.join(config.backup.dir, file.name)); } catch {}
+  }
+}
+
 async function createBackup({ reason = 'scheduled' } = {}) {
   if (config.dbPath === ':memory:') throw new Error('لا يمكن إنشاء نسخة احتياطية من قاعدة بيانات الذاكرة.');
   fs.mkdirSync(config.backup.dir, { recursive: true });
@@ -13,28 +31,35 @@ async function createBackup({ reason = 'scheduled' } = {}) {
   if (typeof db.backup === 'function') await db.backup(target);
   else fs.copyFileSync(config.dbPath, target);
 
-  const files = fs.readdirSync(config.backup.dir)
-    .filter(name => /^staff-.*\.db$/.test(name))
-    .map(name => ({ name, time: fs.statSync(path.join(config.backup.dir, name)).mtimeMs }))
-    .sort((a, b) => b.time - a.time);
-  for (const file of files.slice(Math.max(1, config.backup.keep))) {
-    try { fs.unlinkSync(path.join(config.backup.dir, file.name)); } catch {}
-  }
+  // الفحص **قبل** التقليم. كان التقليم يسبق الفحص: إن اقتطع القرص الكتابة
+  // (السبب الأشيع لهذه الحالة) حُذفت النسخ السليمة القديمة قبل أن يكتشف أحد
+  // أن النسخة الجديدة غير صالحة — فيضيع الصالح وينجو الفاسد.
   const check = verify(target);
-  if (!check.ok) throw new Error(`أُنشئت النسخة الاحتياطية لكنها فشلت في الفحص: ${check.detail}`);
+  if (check.ok === false) {
+    throw new Error(`أُنشئت النسخة الاحتياطية لكنها فشلت في الفحص: ${check.detail} — لم تُحذف أي نسخة سابقة.`);
+  }
+  if (check.ok !== true) {
+    // لا نعرف. «نسخة لم تُختبر ليست نسخة»: لا ندّعي أنها سليمة، ولا نترك
+    // لدينا نسخة لم يُعرف حالتها. لا تقليم في الحالتين.
+    throw new Error(`تعذّر التحقق من النسخة الاحتياطية: ${check.detail} — لم تُحذف أي نسخة سابقة.`);
+  }
+  pruneBackups(snapshotBackups());
   return target;
 }
 
 /**
  * فحص سلامة نسخة احتياطية: نسخة لم تُختبر ليست نسخة.
  * يفتح الملف للقراءة فقط، يشغّل PRAGMA integrity_check، ويسأل SQLite عن جداوله.
- * يعمل فقط إن كان better-sqlite3 الحقيقي متاحاً؛ غير ذلك يُعيد ok=null بصدق.
+ * `ok === null` يعني «تعذّر الفحص» — لا سلامة ولا فساد، ويجب ألا يُعرض
+ * كسليم. كان يُعيد `ok: true` في هذه الحالة فتقول «سليمة» نسخة لم تُفحص.
  */
 function verify(pathToFile) {
+  // ok في القاعدة: 1 سليم، 0 فاشل، -1 غير معروف (العمود NOT NULL بلا CHECK).
+  const stored = (ok) => (ok === null ? -1 : (ok ? 1 : 0));
   const detail = (ok, text, size = null) => {
     try {
       getDb().prepare('INSERT INTO backup_checks (path, ok, detail, size_bytes) VALUES (?, ?, ?, ?)')
-        .run(pathToFile, ok ? 1 : 0, text, size);
+        .run(pathToFile, stored(ok), text, size);
     } catch { /* قاعدة الذاكرة أو جدول مفقود: نتجاهل التسجيل */ }
     return { ok, detail: text, size };
   };
@@ -53,7 +78,10 @@ function verify(pathToFile) {
       return detail(true, `سليمة • ${tables} جدولاً • ${staff} إدارياً`, size);
     } finally { probe.close(); }
   } catch (e) {
-    if (e.code === 'MODULE_NOT_FOUND') return detail(true, 'تعذّر الفحص الآلي (better-sqlite3 غير مثبّتة) — الحجم يبدو سليماً', fs.existsSync(pathToFile) ? fs.statSync(pathToFile).size : null);
+    if (e.code === 'MODULE_NOT_FOUND') {
+      // الحجم وحده ليس سلامة: نترك السؤال بلا جواب صريح.
+      return detail(null, 'تعذّر الفحص الآلي (better-sqlite3 غير مثبّتة) — لم يُتحقَّق من السلامة', fs.existsSync(pathToFile) ? fs.statSync(pathToFile).size : null);
+    }
     return detail(false, `فشل الفحص: ${e.message}`);
   }
 }
@@ -70,4 +98,22 @@ function listBackups() {
     .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
 }
 
-module.exports = { createBackup, listBackups, verify };
+/**
+ * ثلاث حالات لا حالتان. `verify()` يُعيد `ok: null` حين يتعذّر الفحص الآلي، و`null`
+ * falsy — فأي `check.ok ? ... : 'فشل'` كان سيعرض «لم يُفحص» على أنه «فاشل».
+ * كل استدعاء يعرض نتيجة الفحص يمرّ من هنا حتى لا تتباعد المواضع الثلاثة.
+ */
+function checkLabel(check) {
+  if (!check) return { emoji: '⚪', label: 'لم يُفحص', color: 'unknown' };
+  if (check.ok === true) return { emoji: '🟢', label: 'فحص السلامة', color: 'success' };
+  if (check.ok === false) return { emoji: '🔴', label: 'فشل الفحص', color: 'danger' };
+  return { emoji: '🟠', label: 'لم يُتحقَّق من السلامة', color: 'warning' };
+}
+
+/** سطر جاهز للعرض: «🟢 فحص السلامة: <التفاصيل>» */
+function checkLine(check) {
+  const c = checkLabel(check);
+  return `${c.emoji} **${c.label}:** ${check ? check.detail : 'لا يوجد سجل فحص'}`;
+}
+
+module.exports = { createBackup, listBackups, verify, checkLabel, checkLine };

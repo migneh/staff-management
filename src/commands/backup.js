@@ -21,9 +21,10 @@ module.exports = {
         try {
           const file = await backup.createBackup({ reason: `manual-${i.user.id}` });
           const check = backup.verify(file);
-          audit.record({ action: 'database_backup', actorId: i.user.id, details: { file, verified: check.ok }, channelId: i.channelId });
+          const label = backup.checkLabel(check);
+          audit.record({ action: 'database_backup', actorId: i.user.id, details: { file, verified: check.ok === true, verificationState: label.color }, channelId: i.channelId });
           return i.editReply({
-            embeds: [embed('✅ تم إنشاء النسخة الاحتياطية', `${divider}\n\`${file.split(/[\\/]/).pop()}\` • ${sizeMb(check.size)}\n${check.ok ? '🟢 **فحص السلامة:** ' : '🔴 **الفحص:** '}${check.detail}\n\n> نسخة لم تُختبر ليست نسخة — تُسجَّل نتيجة كل فحص في \`backup_checks\`.`, check.ok ? COLORS.success : COLORS.danger)],
+            embeds: [embed('✅ تم إنشاء النسخة الاحتياطية', `${divider}\n\`${file.split(/[\\/]/).pop()}\` • ${sizeMb(check.size)}\n${backup.checkLine(check)}\n\n> نسخة لم تُختبر ليست نسخة — تُسجَّل نتيجة كل فحص في \`backup_checks\`.`, COLORS[label.color] || COLORS.info)],
           });
         } catch (e) {
           return i.editReply({ embeds: [embed('❌ فشل النسخ الاحتياطي', e.message, COLORS.danger)] });
@@ -40,11 +41,12 @@ module.exports = {
         if (!files.length) return i.editReply({ embeds: [embed('🗄️ لا توجد نسخ احتياطية', 'شغّل `/backup` لإنشاء أول نسخة.', COLORS.warning)] });
         const newest = files[0];
         const check = backup.verify(newest.path);
+        const label = backup.checkLabel(check);
         const rows = files.slice(0, 10).map(f => `• \`${f.name}\` — ${sizeMb(f.size)} • ${kit.tsRelative(f.modifiedAt)}`);
         return i.editReply({
           embeds: [embed(`🗄️ النسخ الاحتياطية (${files.length})`,
-            `${rows.join('\n')}${files.length > 10 ? `\n… و${files.length - 10} نسخة أخرى` : ''}\n${divider}\n**فحص أحدث نسخة:** ${check.ok ? '🟢' : '🔴'} ${check.detail}\n\n**خطوات الاسترجاع:** أوقف البوت ← احتفظ بـ \`data/staff.db\` جانباً ← انسخ النسخة مكانه ← \`PRAGMA integrity_check\` ← ثم شغّل البوت وتحقّق بـ \`/system-status\``,
-            check.ok ? COLORS.success : COLORS.danger).setFooter({ text: `آخر فحص: ${clock.nowIso()} بتوقيت UTC` })],
+            `${rows.join('\n')}${files.length > 10 ? `\n… و${files.length - 10} نسخة أخرى` : ''}\n${divider}\n**فحص أحدث نسخة:** ${label.emoji} ${check.detail}\n\n**خطوات الاسترجاع:** أوقف البوت ← احتفظ بـ \`data/staff.db\` جانباً ← انسخ النسخة مكانه ← \`PRAGMA integrity_check\` ← ثم شغّل البوت وتحقّق بـ \`/system-status\``,
+            COLORS[label.color] || COLORS.info).setFooter({ text: `آخر فحص: ${clock.nowIso()} بتوقيت UTC` })],
         });
       },
     },
