@@ -32,7 +32,7 @@ function warningCard(draft, { pending = false, rowId = null } = {}) {
      fields: [
        { name: '👤 العضو', value: `<@${draft.target}>`, inline: true },
        { name: '📋 السبب', value: draft.reason, inline: false },
-       pending ? { name: 'ℹ️ ملاحظة', value: 'تُستأنف بقية النقاط التلقائية.', inline: false } : null,
+       pending ? { name: 'ℹ️ ملاحظة', value: 'لا تُمنح نقاط لهذا الإجراء في النظام الحالي.', inline: false } : null,
      ],
      color: pending ? COLORS.info : COLORS.warning,
      footer: kit.footerLine(pending ? '⚠️ مراجعة قبل التسجيل' : `السجل #${rowId}`),
@@ -59,7 +59,7 @@ function noteCard(draft, { pending = false, rowId = null } = {}) {
        { name: '👤 العضو', value: `<@${draft.target}>`, inline: true },
        { name: '📝 المحتوى', value: draft.content, inline: false },
        draft.is_secret ? { name: '🔒 سرية', value: 'نعم', inline: true } : null,
-       pending ? { name: 'ℹ️ ملاحظة', value: 'تُستأنف بقية النقاط التلقائية.', inline: false } : null,
+       pending ? { name: 'ℹ️ ملاحظة', value: 'لا تُمنح نقاط لهذا الإجراء في النظام الحالي.', inline: false } : null,
      ],
      color: pending ? COLORS.info : (draft.type === 'positive' ? COLORS.success : COLORS.warning),
      footer: kit.footerLine(pending ? '📝 مراجعة قبل التسجيل' : `السجل #${rowId}`),
@@ -119,10 +119,10 @@ module.exports = {
         .addUserOption(o => o.setName('user').setDescription('الإداري').setRequired(true))
         .addStringOption(o => o.setName('type').setDescription('نوع الإنذار').setRequired(true)
           .addChoices(
-            { name: '🟡 إنذار شفهي (-10 نقطة)', value: 'verbal' },
-            { name: '🟠 إنذار أول (-20 نقطة)', value: 'first' },
-            { name: '🔴 إنذار ثاني (-20 نقطة)', value: 'second' },
-            { name: '🔴 إنذار أخير (-20 نقطة + إيقاف)', value: 'final' }
+            { name: '🟡 إنذار شفهي', value: 'verbal' },
+            { name: '🟠 إنذار أول', value: 'first' },
+            { name: '🔴 إنذار ثاني', value: 'second' },
+            { name: '🔴 إنذار أخير (مع إيقاف)', value: 'final' }
           )),
       level: LEVELS.SUPERVISOR,
       team: 'moderation',
@@ -145,8 +145,8 @@ module.exports = {
         .addUserOption(o => o.setName('user').setDescription('الإداري').setRequired(true))
         .addStringOption(o => o.setName('type').setDescription('نوع الملاحظة').setRequired(true)
           .addChoices(
-            { name: '🟢 ملاحظة إيجابية (+5 نقطة)', value: 'positive' },
-            { name: '🟡 ملاحظة سلبية (-10 نقطة)', value: 'negative' }
+            { name: '🟢 ملاحظة إيجابية', value: 'positive' },
+            { name: '🟡 ملاحظة سلبية', value: 'negative' }
           )),
       level: LEVELS.SUPERVISOR,
       team: 'moderation',
@@ -267,7 +267,7 @@ module.exports = {
     'punish:warningcancel': async (i, [token]) => {
       const draft = getDraft(i, token);
       if (draft && draft.actorId === i.user.id) drafts.delete(token);
-      return i.update({ embeds: [kit.notice('neutral', 'أُلغي الإنذار', 'لم يُسجَّل أي إنذار ولم تُخصم نقاط.', { footer: kit.footerLine('⚠️ إنذار ملغى') })], components: [] });
+      return i.update({ embeds: [kit.notice('neutral', 'أُلغي الإنذار', 'لم يُسجَّل أي إنذار.', { footer: kit.footerLine('⚠️ إنذار ملغى') })], components: [] });
     },
 
     'punish:notekok': async (i, [token]) => {
@@ -294,14 +294,8 @@ module.exports = {
       await sendToChannel(i.client, 'staff-logs', { embeds: [e] });
       await i.update({ embeds: [e], components: [] });
       
-      await dm(i.client, draft.target, { embeds: [kit.card({
-        title: `${def.emoji} ${def.label} جديدة`,
-        description: `${content}\n\nبواسطة: <@${i.user.id}>`,
-        color: draft.type === 'positive' ? COLORS.success : COLORS.warning,
-        footer: kit.footerLine(`بواسطة <@${i.user.id}>`),
-      })] }).catch(() => {});
-      
       await replyEphemeral(i, `${def.emoji} تمت إضافة ${def.label} على <@${draft.target}>${isSecret ? ' 🔒' : ''}.`, COLORS.success);
+      // إشعار العضو مرة واحدة فقط، والملاحظة السرية لا تُرسل نصها إليه إطلاقاً.
       if (!isSecret) await dm(i.client, draft.target, { embeds: [kit.card({
         title: `${def.emoji} ${def.label} جديدة`,
         description: `${content}\n\nبواسطة: <@${i.user.id}>`,
