@@ -52,6 +52,10 @@ module.exports = {
         .addStringOption(o => o.setName('content').setDescription('نص الملاحظة').setRequired(true).setMaxLength(500))
         .addBooleanOption(o => o.setName('secret').setDescription('ملاحظة سرية (للإدارة فقط)')),
       level: LEVELS.SUPERVISOR,
+      // نفس بوابة /note (punishments.js:152) — لا فرق في الأثر: كلاهما يكتب في
+      // staff_notes ويقرأه معامل negativeNotes في score.js:108 ثم شروط الترقية
+      // في promotions.js. بلا team كان مشرف الدعم يعوق ترقية الإشراف بملاحظة.
+      team: 'moderation',
       async execute(i) {
         const user = i.options.getUser('user');
         const type = i.options.getString('type');

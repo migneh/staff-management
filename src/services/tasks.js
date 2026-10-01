@@ -323,10 +323,24 @@ function complete(id, userId) {
   return get(task.id);
 }
 
-/** إلغاء مهمة مع تسجيل مَن ألغاها ومتى — كان المعامل actorId مُهمَلاً سابقاً */
-function cancel(id, actorId = null) {
+/**
+ * إلغاء مهمة مع تسجيل مَن ألغاها ومتى — كان المعامل actorId مُهمَلاً سابقاً.
+ *
+ * ⚠️ الفحص القديم كان `WHERE id = ? AND status = 'pending'` بلا `user_id` إطلاقاً،
+ * فأي إداري يمرّ على mission:cancel (المستوى MANAGEMENT) كان يلغي مهمة أي عضو —
+ * بما فيها مهام التأهيل التي يحكم `approveOnboarding` على بقائها. النموذج هنا
+ * هو `complete()` أعلاه: `user_id` في WHERE لا مقارنة بعد الاستعلام.
+ *
+ * `ownerId` اختياري، لكن تمريره هو ما يُقيّد الإلغاء بصاحب المهمة. السلوك
+ * الافتراضي (بلا ownerId) كما كان — والاستدعاء الوحيد في السجل هو
+ * src/commands/missions.js:99، وهو ملف لا تملكه هذه المهمة: مرّر له صاحب
+ * المهمة إن أردت القصر على صاحبها.
+ */
+function cancel(id, actorId = null, ownerId = null) {
+  const scoped = ownerId !== null && ownerId !== undefined;
   const res = getDb().prepare(`UPDATE staff_tasks SET status = 'cancelled', cancelled_by = ?, cancelled_at = ?, updated_at = ?
-    WHERE id = ? AND status = 'pending'`).run(actorId, nowIso(), nowIso(), Number(id));
+    WHERE id = ? AND status = 'pending' ${scoped ? 'AND user_id = ?' : ''}`)
+    .run(actorId, nowIso(), nowIso(), Number(id), ...(scoped ? [ownerId] : []));
   return res.changes > 0;
 }
 

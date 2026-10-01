@@ -287,19 +287,16 @@ async function weeklyReport(client) {
   const all = staffService.all();
   const week = today();
 
-  // ===== نقاط الأسبوع =====
-  // سياسة معلنة: لا خصم تراكمي. الأسبوع الضعيف يُراجع بشرياً (قائمة المراجعة أدناه)
-  // بدل آخر -10 في الرصيد بلا سقف — وهي الحلقة التي أوصلت الفريق إلى أرقام سالبة.
+  // ===== قائمة المراجعة الأسبوعية =====
+  // سياسة معلنة: لا خصم ولا مكافأة تلقائية. الأسبوع الضعيف يُراجع بشرياً
+  // (قائمة المراجعة أدناه) بدل تعديل رصيد نقاط لم يعد له وجود.
   const below = [];
   for (const m of all) {
     if (EXEMPT.includes(m.status)) continue;
     if (m.status === 'probation') continue; // عضو جديد لا يُعاقب قبل أن يبدأ
     if (leaveService.activeForUser(m.user_id).length) continue;
     const sc = score.compute(m, score.monthlyRaw(m.user_id, 7, 0)).score; // 7 days, no offset
-if (sc >= 80) {
-       // Points system removed - week_above_80 award disabled
-     }
-     else if (sc < 50) below.push({ user: m.user_id, rank: m.rank, score: sc });
+    if (sc < 50) below.push({ user: m.user_id, rank: m.rank, score: sc });
   }
 
   // ===== الترتيب =====
@@ -358,11 +355,10 @@ async function monthlyReport(client) {
     const prev = reports.lastSaved('monthly', `${prevPeriod}:${t}`);
     const diff = prev ? avg - prev.avg : null;
     reports.save('monthly', `${period}:${t}`, { avg, members: rows.map(r => ({ user: r.staff.user_id, score: r.score })) });
-    // استخدم نفس بوابة «أفضل إداري» المعلنة في reports.js، لا مجرد أعلى Score.
-    // هذا يمنع منح +50 لعضو بلا عمل فعلي أو لعضو في إجازة/تجربة.
-const best = reports.bestOfMonth(rows);
-     // Points system removed - best_of_month award disabled
-     embeds.push(embed(`🗓️ التقرير الشهري — ${t === 'support' ? 'الدعم الفني' : 'الإشراف'} (${period})`,
+    // استخدم نفس بوابة «أفضل إداري» المعلنة في reports.js لا مجرد أعلى Score،
+    // فهو يمنع تسمية عضو بلا عمل فعلي أو في إجازة/تجربة.
+    const best = reports.bestOfMonth(rows);
+    embeds.push(embed(`🗓️ التقرير الشهري — ${t === 'support' ? 'الدعم الفني' : 'الإشراف'} (${period})`,
        `متوسط Score: **${avg}**${diff != null ? ` (${diff >= 0 ? '📈 +' : '📉 '}${diff} عن الشهر الماضي)` : ''}\n🏅 أفضل إداري: ${best ? `<@${best.staff.user_id}> (${best.score})` : '—'}\n` +
        `🎫/🛡️ الإجمالي: ${rows.reduce((s, r) => s + (t === 'support' ? r.raw.tickets : r.raw.actions), 0)}\n⚠️ إنذارات: ${rows.reduce((s, r) => s + r.warnings.reduce((x, w) => x + w.c, 0), 0)}`, COLORS.primary));
   }
@@ -393,8 +389,36 @@ let schedulerStarted = false;
 /** قائمة المهام المعروضة في /status */
 const JOBS = [];
 
+/**
+ * المهام المجدولة المرتبطة بمفتاح تبديل من services/settings.
+ * التبديل يُقرأ عند كل دورة لا عند الإقلاع: فـ `/config disable` يسري فوراً
+ * بلا إعادة تشغيل، وهذا ما وعدت به واجهة /config («التغييرات تؤثر فوراً»).
+ * هذه المهام كانت معروضة في /config كأنها تُوقَف بينما لم يقرأها شيء —
+ * أي أن المشغّل كان يُقال له «معطل» والمهمة تستمر.
+ */
+const JOB_TOGGLES = {
+  backup: 'autoBackups',
+  'weekly-report': 'weeklyReports',
+  'monthly-report': 'monthlyReports',
+};
+
+/**
+ * هل تُعمل هذه المهمة في هذه الدورة؟ تقرأ المفتاح الآن (لا عند الإقلاع)
+ * فتسري حالة /config فوراً. مهمّة بلا مفتاح تبقى مشغّلة دائماً.
+ * @param {string} name اسم المهمة كما في قائمة jobs
+ */
+function jobEnabled(name) {
+  const key = JOB_TOGGLES[name];
+  return key ? settings.featureToggle(key) !== false : true;
+}
+
 function guarded(name, fn) {
   const wrapped = async () => {
+    if (!jobEnabled(name)) {
+      // لا نسجّل دورة في job_runs: سجلّ هنا كان سيُظهر المهمة في /status كأنها نجحت.
+      logger.info(`⏭️ تخطّي "${name}" — الميزة "${JOB_TOGGLES[name]}" معطّلة عبر /config.`);
+      return;
+    }
     if (running.has(name)) {
       logger.warn(`المهمة "${name}" ما زالت تعمل — تم تخطي هذه الدورة.`);
       return;
@@ -460,7 +484,8 @@ function start(client) {
     ['maintenance', '0 3 1 * *', () => retention.run({ dryRun: false })],
   ];
   JOBS.length = 0;
-  JOBS.push(...jobs.map(([name, expr]) => ({ name, expr, tz })));
+  // toggle معلن حتى يعرف /status أن المهمة مربوطة بمفتاح تبديل (أو غير مربوطة).
+  JOBS.push(...jobs.map(([name, expr]) => ({ name, expr, tz, toggle: JOB_TOGGLES[name] || null })));
   for (const [name, expr, fn] of jobs) {
     const run = guarded(name, fn);
     const scheduled = cron.schedule(expr, run, { timezone: tz });
@@ -475,6 +500,8 @@ function start(client) {
     processTaskReminders(client);
     // لا نشغل التقارير اليومية/الأسبوعية/الشهرية هنا لتجنب تكرارها عند إعادة التشغيل
   }, 10_000);
+  const paused = jobs.filter(([name]) => JOB_TOGGLES[name]).filter(([name]) => !jobEnabled(name)).map(([name]) => name);
+  if (paused.length) logger.warn(`⏸️ مهام متوقفة عبر /config عند الإقلاع: ${paused.join('، ')}.`);
   logger.info(`⏰ المجدول يعمل (${jobs.length} مهمة • المنطقة الزمنية ${tz}).`);
 }
 
@@ -484,4 +511,4 @@ function stop() {
   schedulerStarted = false;
 }
 
-module.exports = { start, stop, status, checkAbsence, liftSuspensions, processLeaves, processResignations, processTaskReminders, dailyReport, weeklyReport, monthlyReport, JOBS, clearRunningTasks };
+module.exports = { start, stop, status, checkAbsence, liftSuspensions, processLeaves, processResignations, processTaskReminders, dailyReport, weeklyReport, monthlyReport, JOBS, JOB_TOGGLES, jobEnabled, clearRunningTasks };

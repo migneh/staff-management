@@ -63,6 +63,11 @@ function load() {
     } else if (group === 'channel') cache.channels[name] = v;
     else if (group === 'activity') cache.activityChannels[name] = v;
     else if (group === 'scoreWeights') { cache.scoreWeights ||= {}; cache.scoreWeights[name] = v; }
+    else if (group === 'featureToggles') {
+      // الصف كان يُكتب ثم يُسقَط عند القراءة: لا فرع في load يطابق 'featureToggles'
+      // فلا تُحفظ أي حالة أصلاً، وكل مفتاح كان يُقرأ افتراضه دائماً.
+      if (v && typeof v === 'object' && !Array.isArray(v)) cache.featureToggles = v;
+    }
     else if (group === 'ticketLogBotId') cache.ticketLogBotId = v;
   }
   // تنظيف القيم الوهمية
@@ -86,25 +91,52 @@ function setActivity(type, ids) { set(`activity.${type}`, ids); }
 function setTicketLogBotId(botId) { set('ticketLogBotId', botId || null); }
 
 // ===== ميزات قابلة للتبديل =====
-const FEATURE_TOGGLES_DEFAULTS = {
-   weeklyReports: true,           // تقارير أسبوعية تلقائية
-   monthlyReports: true,          // تقارير شهرية تلقائية
-   activityTracking: true,        // تتبع النشاط
-   punishmentSystem: true,        // نظام العقوبات (/warn, /note)
-   detailedSystemStatus: true,    // حالة النظام التفصيلية
-   promotionProgress: true,       // أمر تقدم الترقية
-   myStatusCommand: true,         // أمر حالتي الحالية
-   auditExport: true,             // تصدير سجلات التدقيق
-   autoBackups: true,             // نسخ احتياطية تلقائية
-};
+/**
+ * مفاتيح الميزات المتاحة، والتعليق يذكر القارئ الفعلي لكل مفتاح.
+ * الهدف أن يصبح «مفتاح بلا قارئ» خطأً مرئياً عند المراجعة: مفتاح لا يقرأه
+ * شيء هو مفتاح يَعِد المشغّل في /config بإيقاف مهمة تستمر (الخطأ الذي بُني هنا:
+ * `autoTicketPoints` بقي بعد حذف نظام النقاط، وثلاثة مفاتيح للمجدول كانت
+ * معروضة للإيقاف بينما المهام تتجاهلها تماماً).
+ *
+ * الافتراضي لكل مفتاح: true — لا يبدأ شيء معطّلاً بلا سبب.
+ */
+const FEATURE_TOGGLES_DEFAULTS = Object.freeze({
+   weeklyReports: true,           // يُقرأ في: src/scheduler.js (المهمة weekly-report)
+   monthlyReports: true,          // يُقرأ في: src/scheduler.js (المهمة monthly-report)
+   activityTracking: true,        // ⚠️ لا قارئ بعد — الكتابة في src/services/activity.js غير مربوطة بالمفتاح
+   punishmentSystem: true,        // يُقرأ في: src/commands/punishments.js (/warn, /note)
+   detailedSystemStatus: true,    // يُقرأ في: src/commands/system.js (الوضع التفصيلي)
+   promotionProgress: true,       // يُقرأ في: src/commands/promotion-progress.js
+   myStatusCommand: true,         // يُقرأ في: src/commands/my-status.js
+   auditExport: true,             // يُقرأ في: src/commands/audit.js و staff-logs.js
+   autoBackups: true,             // يُقرأ في: src/scheduler.js (المهمة backup)
+});
 
-function featureToggle(key) {
-  const toggles = load().featureToggles || {};
-  return toggles[key] !== undefined ? toggles[key] : FEATURE_TOGGLES_DEFAULTS[key];
+/** المفاتيح المتاحة فعلياً — مصدر واحد تبني منه /config قائمته. */
+const FEATURE_TOGGLES = Object.freeze({ ...FEATURE_TOGGLES_DEFAULTS });
+
+/** هل هذا مفتاح ميزة معروف؟ يُستخدم لمنع تخزين مفاتيح ميتة. */
+function isFeatureToggle(key) {
+  return Object.hasOwn(FEATURE_TOGGLES_DEFAULTS, key);
 }
 
+function featureToggle(key) {
+  if (!isFeatureToggle(key)) return undefined;
+  const toggles = load().featureToggles || {};
+  return toggles[key] !== undefined ? !!toggles[key] : FEATURE_TOGGLES_DEFAULTS[key];
+}
+
+/**
+ * حفظ حالة ميزة. أي مفتاح غير معروف يُرفض بخطأ صريح بدل أن يُخزَّن صامتاً
+ * ويظهر للمشغّل كأنه مُفعَّل، ونُنظّف المفاتيح الميتة الموروثة
+ * (مثل autoTicketPoints الباقية من نظام النقاط المحذوف).
+ */
 function setFeatureToggle(key, value) {
-  const toggles = { ...(load().featureToggles || {}), [key]: value };
+  if (!isFeatureToggle(key)) throw new Error(`مفتاح ميزة غير معروف: ${String(key)}`);
+  const stored = load().featureToggles || {};
+  const toggles = {};
+  for (const k of Object.keys(stored)) if (isFeatureToggle(k)) toggles[k] = stored[k];
+  toggles[key] = !!value;
   set('featureToggles', toggles);
   return toggles[key];
 }
@@ -254,6 +286,6 @@ module.exports = {
   roles, channels, activityChannels, roleId, channelId, ticketLogBotId, governanceRoleId, vacationRoleId, status,
   policy, setPolicy, resetPolicy, leavePolicy, resignationPolicy, VACATION_ROLE_TIMING,
   CHANNEL_KEYS, OPTIONAL_CHANNEL_KEYS, CHANNEL_META,
-  featureToggle, setFeatureToggle, resetFeatureToggles,
+  featureToggle, setFeatureToggle, resetFeatureToggles, FEATURE_TOGGLES, FEATURE_TOGGLES_DEFAULTS, isFeatureToggle,
   scoreWeights, setScoreWeights,
 };

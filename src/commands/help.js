@@ -18,7 +18,7 @@ const modals = {
     note: 'البحث يعرض الأوامر المتاحة لك فقط حسب رتبتك وفريقك.',
   }),
 };
-const { tsRelative, tsDate } = require('../ui/kit');
+const { tsRelative } = require('../ui/kit');
 const { scoreEmoji } = require('../utils');
 const staffService = require('../services/staff');
 const reports = require('../services/reports');
@@ -27,6 +27,37 @@ const faq = require('../services/faq');
 const taskService = require('../services/tasks');
 const { getDb } = require('../database');
 const { userEmbed, COLORS, progressBar, scoreColor, hoursSince, replyEphemeral } = require('../utils');
+
+/**
+ * رمز كل حالة في constants.STATUS — مصدر واحد لكل ما يرسم حالة عضو.
+ * كان `/me` يحمل خريطة داخلية ناقصة `removed`، فكان عنوان اللوحة يطبع
+ * «undefined لوحتي الشخصية». الخريطة هنا مشتقّة من مفاتيح STATUS نفسها،
+ * وأي حالة جديدة بلا رمز تسقط إلى ▫️ بدل undefined.
+ * القيم نفسها موحّدة مع CHIP في src/ui/kit.js.
+ */
+const STATUS_GLYPHS = {
+  active: '🟢',
+  inactive: '🟠',
+  on_leave: '🏖️',
+  probation: '🧪',
+  suspended: '⛔',
+  resigned: '⚫',
+  removed: '🚪',
+};
+
+/**
+ * خريطة الرموز المدمجة: كل مفتاح في constants.STATUS مربوط برمز، وأي مفتاح
+ * بلا رمز تسقط إلى ▫️. تُبنى مرة واحدة وتُصدَّر للاختبار التعاقدي.
+ */
+const RESOLVED_STATUS_GLYPHS = {
+  ...Object.fromEntries(Object.keys(STATUS).map(key => [key, '▫️'])),
+  ...STATUS_GLYPHS,
+};
+
+/** رمز الحالة — لا يعيد undefined أبداً، حتى لو ظهرت حالة جديدة في قاعدة البيانات. */
+function statusGlyph(status) {
+  return RESOLVED_STATUS_GLYPHS[status] || '▫️';
+}
 
 function dashboard(i) {
   const s = staffService.get(i.user.id);
@@ -41,7 +72,7 @@ function dashboard(i) {
   const trend = reports.personalTrend(s);
   const blocker = ev.checks.find(c => !c.pass);
 
-  const statusIcon = { active: '🟢', inactive: '🟠', on_leave: '🏖️', probation: '🧪', suspended: '⛔', resigned: '⚫' }[s.status];
+  const statusIcon = statusGlyph(s.status);
   const alerts = [];
   if (pendingTasks) alerts.push(`📋 **${pendingTasks}** مهمة معلّقة — افتح «مهامي» للمتابعة.`);
   if (unread) alerts.push(`📌 **${unread}** تعليمات مهمة بانتظار القراءة.`);
@@ -95,6 +126,8 @@ module.exports = {
     },
   ],
   modals,
+  statusGlyph,
+  RESOLVED_STATUS_GLYPHS,
   components: {
     'help:section': async (i) => i.update(helpPayload(i, i.values[0])),
     'help:page': async (i, [section, page]) => i.update(helpPayload(i, section, page)),

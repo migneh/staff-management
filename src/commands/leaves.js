@@ -1029,7 +1029,7 @@ module.exports = {
     'leave:myleaves': async (i, [page, userId]) => {
       // userId للتحقق أن الصفحة تخص صاحبها أو الإدارة
       const target = userId || i.user.id;
-      if (target !== i.user.id && i.staffLevel < LEVELS.MANAGEMENT) return replyEphemeral(i, '❌ لا تملك الصلاحية.', COLORS.danger);
+      if (target !== i.user.id && (!i.staffLevel || i.staffLevel < LEVELS.MANAGEMENT)) return replyEphemeral(i, '❌ لا تملك الصلاحية.', COLORS.danger);
       return i.update(myLeavesPayload(target, Number(page)));
     },
     'leave:pickaction': async (i) => {
@@ -1060,8 +1060,11 @@ module.exports = {
         );
         return i.reply({ embeds: [embed('⚠️ تأكيد الإلغاء', `هل تريد إلغاء الطلب **#${id}**؟`, COLORS.warning)], components: [row], ephemeral: true });
       } else {
-        const current = getDb().prepare('SELECT end_date FROM leave_requests WHERE id = ?').get(Number(id));
-        return forms.open(i, modals.extend({ id, end: current?.end_date }));
+        // نفس نطاق فرع 'suggestion' أعلاه: صاحب الطلب فقط. بدون شرط المالك كان
+        // أي إداري يقرأ تاريخ نهاية إجازة أي زميل عبر معرّف مفتاح.
+        const current = getDb().prepare('SELECT end_date FROM leave_requests WHERE id = ? AND user_id = ?').get(Number(id), i.user.id);
+        if (!current) return replyEphemeral(i, '❌ الطلب غير موجود أو ليس من طلباتك.', COLORS.danger);
+        return forms.open(i, modals.extend({ id, end: current.end_date }));
       }
     },
     'leave:confirmcancel': async (i, [id]) => {

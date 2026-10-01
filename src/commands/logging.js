@@ -6,6 +6,8 @@ const { LEVELS, MOD_ACTION_TYPES } = require('../constants');
 const { getDb } = require('../database');
 const ticketLogs = require('../services/ticketLogs');
 const audit = require('../services/audit');
+const staffService = require('../services/staff');
+const { rankInfo } = require('../services/permissions');
 const { COLORS, replyEphemeral, sendToChannel, dm, log } = require('../utils');
 const kit = require('../ui/kit');
 
@@ -63,6 +65,28 @@ function actionButtons(token) {
 }
 
 const ID_RE = /^\d{15,22}$/;
+
+/**
+ * بوابة تراتب الإجراءات: لا يُسجَّل إجراء على غير إداري، ولا على رتبة مساوية أو أعلى.
+ *
+ * مصدر الرتبة ليس رتب ديسكورد بل جدول TEAM_RANKS في src/constants عبر
+ * rankInfo(team, rank).level — وهو نفس المصدر الذي يقرأه src/services/score.js:145
+ * وsrc/services/reports.js:67. نستبعد رتب ديسكورد لأنها قابلة للنتحال بنسخ الاسم.
+ * المقارنة: level(الهدف) >= level(المنفّذ) يُرفض، فالتساوي مرفوض أيضاً
+ * (قاعدة ديسكورد: لا يُنفَّذ إجراء على من هو في رتبتك أو أعلى). الطرفان على سُلّم LEVELS نفسه (١..٧)،
+ * وi.staffLevel هو مستوى المنفّذ كما اشتقّه index.js من resolveStaff.
+ * @returns {string|null} رسالة الرفض، أو null إذا كان الإجراء مسموحاً.
+ */
+function actionBlockedMessage(i, targetId) {
+  const target = staffService.get(targetId);
+  if (!target) return '❌ هذا العضو غير مسجل كإداري — لا يُسجَّل عليه إجراء.';
+  const targetLevel = rankInfo(target.team, target.rank)?.level;
+  if (targetLevel == null) return `❌ رتبة **${target.rank}** غير مربوطة بإعدادات البوت. شغّل **/sync-staff** أولاً.`;
+  if (targetLevel >= (i.staffLevel || 0)) {
+    return `❌ لا يمكنك تسجيل إجراء على **${target.rank}** — رتبتك أو ما فوقها. القاعدة: لا يُسجَّل إجراء على من هو في رتبتك أو أعلى.`;
+  }
+  return null;
+}
 
 /** أسباب جاهزة لكل نوع إجراء — تُختار بنقرة وتُدمج مع النص الحر. */
 const ACTION_REASONS = {
@@ -254,6 +278,9 @@ module.exports = {
       const duration = forms.value(i, 'duration');
       const evidence = forms.value(i, 'evidence');
       if (!ID_RE.test(target)) return replyEphemeral(i, '❌ لم يُحدَّد العضو بشكل صحيح. اختر العضو من قائمة النموذج.', COLORS.danger);
+      // البوابة قبل إنشاء المسودة: لا بطاقة تأكيد ولا تسجيل للعضو غير المؤهَّل.
+      const blocked = actionBlockedMessage(i, target);
+      if (blocked) return replyEphemeral(i, blocked, COLORS.danger);
       if (!reason) return replyEphemeral(i, 'اختر سبباً جاهزاً أو اكتب تفاصيل السبب قبل المتابعة.', COLORS.danger);
       if (evidence && !/^https?:\/\//i.test(evidence)) return replyEphemeral(i, 'رابط الدليل يجب أن يبدأ بـ https:// أو http://.', COLORS.danger);
       const draft = { token: randomBytes(6).toString('hex'), owner: i.user.id, actorId: i.user.id, guild: i.guildId, type, target, reason, presets, presetReason: forms.value(i, 'reason'), duration: duration && duration !== 'none' ? duration : null, evidence: evidence || null, expires: Date.now() + DRAFT_TTL };
@@ -281,6 +308,12 @@ module.exports = {
       const draft = getDraft(i, token);
       if (!draft) return replyEphemeral(i, '⌛ انتهت صلاحية هذه البطاقة. أعد تنفيذ **/log-action** من جديد.', COLORS.warning);
       drafts.delete(token);
+      // إعادة البوابة عند الكتابة: رتبة الطرف الآخر قد تتغيّر بين فتح النموذج
+      // والتأكيد، فلا يُكتب سطر واحد دون تحقق من آخر لحظة.
+      const blocked = actionBlockedMessage(i, draft.target);
+      if (blocked) {
+        return i.update({ embeds: [kit.notice('danger', 'رُفض تسجيل الإجراء', blocked, { footer: kit.footerLine('🛡️ لم يُسجَّل أي إجراء') })], components: [] });
+      }
       const res = getDb().prepare(`INSERT INTO mod_actions (moderator_id, target_id, action_type, reason, duration, evidence) VALUES (?, ?, ?, ?, ?, ?)`)
         .run(draft.actorId, draft.target, draft.type, draft.reason, draft.duration, draft.evidence);
       

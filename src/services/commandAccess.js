@@ -40,4 +40,28 @@ const SUSPENDED_ALLOWED_COMPONENT_PREFIXES = [
   'ticket:', 'modaction:', 'leave:modal', 'leave:extendmodal', 'promo:modal',
 ];
 
-module.exports = { accessContext, commandAccessError, SUSPENDED_ALLOWED, SUSPENDED_ALLOWED_COMPONENT_PREFIXES };
+/**
+ * نفس سياسة `commandAccessError` للمكوّنات، بلا نسخة ثانية من الفحوص.
+ *
+ * كان `componentDispatch` ينسخ adminOnly/level/team بنفسه، فنسي `maxLevel` —
+ * وهو الخطأ نفسه الموثّق أعلاه: أمر له حدّ أعلى كان مقيَّداً على مسار الشرطة
+ * Slash وغير مقيَّد على مسار المكوّن. النسخ هنا لا يتجاوز الفحص، بل يسقطه.
+ *
+ * `id` هو الاسم الذي يفحص به الإيقاف. للمكوّنات القائمة تُستبدل قائمة الأسماء
+ * (SUSPENDED_ALLOWED) ببادئات (SUSPENDED_ALLOWED_COMPONENT_PREFIXES) لأن
+ * customId يحمل معاملات بعد النقطتين ولا يمكن مطابقته باسم أمر. لذلك نمرّر
+ * `suspended: false` إلى الدالة المشتركة ونطبّق البادئات هنا — وهو ما يجعل
+ * هذا هو المصدر الوحيد للسياسة على المسارين.
+ */
+function componentAccessError(entry, context, id = '') {
+  const name = String(id || '');
+  const shape = entry ? { ...entry, data: { name } } : null;
+  const denial = commandAccessError(shape, { ...context, suspended: false });
+  if (denial) return denial;
+  if (context.suspended && !SUSPENDED_ALLOWED_COMPONENT_PREFIXES.some(p => name.startsWith(p))) {
+    return 'حسابك الإداري موقوف. يمكنك مراجعة /my-record.';
+  }
+  return null;
+}
+
+module.exports = { accessContext, commandAccessError, componentAccessError, SUSPENDED_ALLOWED, SUSPENDED_ALLOWED_COMPONENT_PREFIXES };
