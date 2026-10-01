@@ -366,8 +366,11 @@ CREATE TABLE IF NOT EXISTS staff_tasks (
    assigned_by TEXT,
    completed_at TEXT,
    reminder_sent_at TEXT,
-   mission_id TEXT,          -- reference to mission template
+   mission_id TEXT,          -- reference to mission_templates(id) — القالب فقط
    team_id TEXT,             -- team mission identifier
+   -- المهمة الأم في staff_tasks: المهمة الجماعية نفسها. لا يوضع في mission_id لأن
+   -- ذلك العمود مرجع قالب (انظر migrationLegacyTeamChildren أدناه).
+   parent_task_id INTEGER,
    priority TEXT DEFAULT 'normal', -- low | normal | high | urgent
    tags TEXT,                -- JSON array of tags
    created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -376,6 +379,7 @@ CREATE TABLE IF NOT EXISTS staff_tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_user_status ON staff_tasks(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_mission ON staff_tasks(mission_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_team ON staff_tasks(team_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent ON staff_tasks(parent_task_id, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_priority ON staff_tasks(priority, due_date);
 
 -- قوالب المهام — مجموعات مهام محددة مسبقاً يمكن تعيينها لعدة أعضاء
@@ -394,20 +398,33 @@ CREATE TABLE IF NOT EXISTS mission_templates (
 );
 CREATE INDEX IF NOT EXISTS idx_mission_templates_active ON mission_templates(is_active, category);
 
--- سجل تنفيذ المهام الجماعية — يتبع تقدم الفريق ككل
+-- سجل تنفيذ المهام الجماعية — يتبع تقدم الفريق ككل.
+--
+-- الأب هنا صفٌّ في staff_tasks (المهمة الجماعية نفسها)، لا صفٌّ في mission_templates:
+-- القالب شيء آخر — مجموعة مهام معرَّفة مسبقاً تُخصَّص لعضو (tasks.createFromTemplate).
+-- أن تُنشَأ مهمة جماعية في جدول القوالب عند كل /mission team كان ترحيلاً للواقع
+-- داخل جدول بيانات حقيقي، والنتيجة أن إتمام المهمة الجماعية كان يرمي بلا استثناء.
+--
+-- mission_id = مرجع القالب (للإسناد من قالب، وللصفوف القديمة).
+-- task_id    = مرجع المهمة الجماعية الأم.
+-- CHECK      = لا صف بلا أب: mission_id و task_id لا يكونان فارغين معاً.
 CREATE TABLE IF NOT EXISTS mission_progress (
    id INTEGER PRIMARY KEY AUTOINCREMENT,
-   mission_id TEXT NOT NULL,
+   mission_id TEXT,
+   task_id INTEGER,
    team_id TEXT,
    user_id TEXT NOT NULL,
    status TEXT NOT NULL DEFAULT 'pending', -- pending | completed | skipped
    completed_at TEXT,
    assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
+   CHECK (mission_id IS NOT NULL OR task_id IS NOT NULL),
    FOREIGN KEY (mission_id) REFERENCES mission_templates(id),
+   FOREIGN KEY (task_id) REFERENCES staff_tasks(id),
    FOREIGN KEY (user_id) REFERENCES staff_members(user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_mission_progress_mission ON mission_progress(mission_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_mission_progress_team ON mission_progress(team_id, status);
+CREATE INDEX IF NOT EXISTS idx_mission_progress_task ON mission_progress(task_id, user_id);
 
 -- قوالب طلبات الإجازة — لتسهيل الطلبات المتكررة
 CREATE TABLE IF NOT EXISTS leave_templates (
@@ -443,6 +460,125 @@ CREATE TABLE IF NOT EXISTS job_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_job_runs_job ON job_runs(job, id);
 `;
+
+/**
+ * كشف تكرار source_message_id قبل إنشاء الفهرس الوحيد عليه.
+ *
+ * لماذا الفحص لازم: services/ticketLogs.js:161 يفحص «هل يوجد صف بنفس المعرّف؟»
+ * ثم يُدرج — أي تعارض بين عمليتين، أو إصدار أقدم بلا ذلك الفحص، يترك صفاً
+ * مكرّراً بلا ما يمنع. عند الإقلاع التالي يفشل CREATE UNIQUE INDEX بـ
+ * SQLITE_CONSTRAINT، ولا تُنفَّذ migrateFaqCategories، ويخرج الاستثناء من getDb
+ * فيطبع index.js:41-46 قيمة process.exit(1). النتيجة: بوت لا يقلع، ورسالة
+ * لا تذكر التكرار ولا المعرّفات.
+ *
+ * ما نفعله: نكشف المكرر باسمه قبل أن نلمس الفهرس. ولا نُسقط الفهرس صامتين:
+ * الفهرس هو الضمانة الوحيدة ضد تكرار النقاط من نفس الرسالة، فإسقاطه يحوّل
+ * السلامة إلى تفاؤل. نرمي خطأً يذكر المعرّفات صراحةً، لا عبارة SQLITE غامضة.
+ *
+ * NULL لا يتعارض أصلاً: الفهرس جزئي (WHERE source_message_id IS NOT NULL)،
+ * و NULL لا يساوي NULL في فهرس فريد، فلا يدخل NULL في هذا الفحص إطلاقاً.
+ */
+function duplicateTicketSources(database) {
+  return database.prepare(`SELECT source_message_id, COUNT(*) AS copies
+    FROM ticket_metrics
+    WHERE source_message_id IS NOT NULL
+    GROUP BY source_message_id
+    HAVING COUNT(*) > 1
+    ORDER BY copies DESC, source_message_id
+    LIMIT 10`).all();
+}
+
+function assertNoDuplicateTicketSources(database) {
+  const duplicates = duplicateTicketSources(database);
+  if (!duplicates.length) return [];
+  const listed = duplicates.map(d => `  ${d.source_message_id} (${d.copies} صفاً)`).join('\n');
+  throw new Error(
+    `تعذّر إنشاء الفهرس الوحيد idx_ticket_source_message: ` +
+    `يوجد ${duplicates.length} معرّف مكرّر في ticket_metrics.source_message_id:\n${listed}\n` +
+    `عالج الصفوف المكرّرة ثم أعد الإقلاع. الفهرس أُسقط عمداً: ` +
+    `تركه بلا قيد يسمح بتكرار النقاط من نفس الرسالة.`
+  );
+}
+
+/**
+ * ترحيل الصفوف التي كتبها الكود القديم: مهمة جماعية داخل `staff_tasks.mission_id`.
+ *
+ * `createTeamMission` كان يضع في mission_id معرّف `staff_tasks.id` للأم — وهو مرجع
+ * قالب في كل مكان آخر (SCHEMA: mission_id = reference to mission_templates). والأسوأ
+ * أن العمود من نوع TEXT، فالرقم 1 خُزّن نصاً «1.0»: لا مرجع قالب ولا حتى مفتاح رقمي
+ * صحيح. الصفوف التي أنشأها /mission team مصابة بهذا اليوم.
+ *
+ * التمييز: mission_id يشير إلى قالب إن وُجد قالب يحمل النص نفسه (وهو ما تكتبه
+ * createFromTemplate)، فكل ما هو أرقام ونقاط ولا يطابق معرّف قالب = بقايا مهمة
+ * جماعية. نُفرغ mission_id ونضع الرقم في parent_task_id. شرط parent_task_id IS NULL
+ * يجعل الترحيل آمناً على التكرار: بعد أول تشغيل لا يعود الصف مرشحاً.
+ */
+function migrateLegacyTeamChildren(database) {
+  const moved = database.prepare(`UPDATE staff_tasks
+      SET parent_task_id = CAST(mission_id AS INTEGER), mission_id = NULL
+    WHERE parent_task_id IS NULL
+      AND team_id IS NOT NULL
+      AND mission_id IS NOT NULL
+      AND mission_id GLOB '[0-9]*'
+      AND mission_id NOT GLOB '*[^0-9.]*'
+      AND mission_id NOT IN (SELECT id FROM mission_templates)`).run();
+  if (moved.changes) {
+    console.log(`[migrate] tasks: نُقلت ${moved.changes} مهمة جماعية من mission_id إلى parent_task_id.`);
+  }
+}
+
+/**
+ * تصحيح مرجع mission_progress: الأب الصحيح هو mission_templates أو staff_tasks.
+ *
+ * لماذا لا تكفي addTableColumns هنا: القيد `mission_id TEXT NOT NULL` ومفتاحه
+ * الأجنبي لا يُرفعان بـ ALTER TABLE — لا في SQLite ولا في غيره. قالب واحد لكل
+ * مهمة جماعية ليس حلاً: mission_templates هو دليل القوالب التي يعرضها
+ * /missions templates ويقرأها tasks.createFromTemplate، وتلويثه صفوف وهمية
+ * عطّل كل قارئه. فإعادة بناء الجدول هي الطريق الوحيد الصادق، وهي ممكنة بلا
+ * خطر يُذكر: لا كاتب لجدول mission_progress في الكود كله (الإكمال القديم كان
+ * يرمي)، لكننا ننقل ما ينتقل سليماً بدل افتراض أنه فارغ.
+ *
+ * guard: وجود عمود task_id. قواعد البيانات الجديدة تُبنى من SCHEMA مباشرة
+ * فتمرّ دون إعادة بناء، والقديمة تُبنى مرة واحدة ثم لا يعود العمود ينقص.
+ *
+ * @param {Set<string>} columns أعمدة mission_progress كما هي الآن
+ * @returns {boolean} هل أُعيد بناء الجدول
+ */
+function migrateMissionProgressParents(database, columns) {
+  if (columns.has('task_id')) return false;
+  const before = database.prepare('SELECT COUNT(*) AS c FROM mission_progress').get().c;
+  const rebuild = database.transaction(() => {
+    database.exec(`CREATE TABLE mission_progress_migrated (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mission_id TEXT,
+        task_id INTEGER,
+        team_id TEXT,
+        user_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        completed_at TEXT,
+        assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
+        CHECK (mission_id IS NOT NULL OR task_id IS NOT NULL),
+        FOREIGN KEY (mission_id) REFERENCES mission_templates(id),
+        FOREIGN KEY (task_id) REFERENCES staff_tasks(id),
+        FOREIGN KEY (user_id) REFERENCES staff_members(user_id)
+      );`);
+    // ما ينتقل: صف له قالب حقيقي وعضو حقيقي. الباقي لا يمرّ قيد FK الجديد،
+    // فبدل أن يموت الإقلاع على قيد غريب نعدّه ونعلنه.
+    database.exec(`INSERT INTO mission_progress_migrated (id, mission_id, task_id, team_id, user_id, status, completed_at, assigned_at)
+      SELECT p.id, p.mission_id, NULL, p.team_id, p.user_id, p.status, p.completed_at, p.assigned_at
+        FROM mission_progress p
+       WHERE p.mission_id IN (SELECT id FROM mission_templates)
+         AND p.user_id IN (SELECT user_id FROM staff_members);`);
+    database.exec('DROP TABLE mission_progress;');
+    database.exec('ALTER TABLE mission_progress_migrated RENAME TO mission_progress;');
+  });
+  rebuild();
+  const after = database.prepare('SELECT COUNT(*) AS c FROM mission_progress').get().c;
+  if (before !== after) {
+    console.warn(`[migrate] mission_progress: ${before - after} صفاً قديماً بلا قالب أو عضو صالح — أُسقط بدل أن يوقف الإقلاع.`);
+  }
+  return true;
+}
 
 function migrate(database) {
   // ترقية قواعد البيانات القديمة بدون فقدان أي سجل.
@@ -488,6 +624,7 @@ function migrate(database) {
   database.exec('CREATE INDEX IF NOT EXISTS idx_leave_user_dates ON leave_requests(user_id, start_date, end_date)');
   database.exec('CREATE INDEX IF NOT EXISTS idx_leave_status_dates ON leave_requests(status, start_date, end_date)');
   database.exec('CREATE INDEX IF NOT EXISTS idx_resignation_status_day ON resignations(status, last_day)');
+  assertNoDuplicateTicketSources(database);
   database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_ticket_source_message ON ticket_metrics(source_message_id) WHERE source_message_id IS NOT NULL');
 
   // فحص التكرار في services/activity.js:54 يقع على المسار الساخن لكل رسالة إدارية.
@@ -496,6 +633,11 @@ function migrate(database) {
   // المقيس على 73,000 صف: 0.56ms → 0.039ms لكل رسالة، والخطة صارت covering.
   database.exec('CREATE INDEX IF NOT EXISTS idx_activity_dedup ON activity_logs(user_id, content_hash, created_at)');
 
+  // services/promotions.js يستعلم ب(created_at) لا بday — لأن day هو today()
+  // بتوقيت Asia/Riyadh بينما created_at UTC، فتحويله إلى day كان سيزيح نافذة
+  // الترقية ثلاث ساعات. الفهرس أعلاه لا يقيّد عمود التاريخ هنا: content_hash غير
+  // مقيَّد فيفلت الحدّ إلى user_id وحده، فيُقرأ كامل تاريخ العضو ثم يُرشَّح.
+  database.exec('CREATE INDEX IF NOT EXISTS idx_activity_user_created ON activity_logs(user_id, created_at)');
 
   // services/score.js:69 وpromotions.js:207 — الجدول بلا أي فهرس إطلاقاً.
   database.exec('CREATE INDEX IF NOT EXISTS idx_staff_notes_user ON staff_notes(user_id, created_at)');
@@ -531,7 +673,9 @@ function migrate(database) {
   addTableColumns('leave_requests', [['suggested_start', 'TEXT'], ['suggested_end', 'TEXT'], ['suggested_note', 'TEXT'], ['suggested_by', 'TEXT'], ['suggested_at', 'TEXT'],
     // كان يُستخدم في التمديد وقبول الاقتراح دون أن يوجد العمود → خطأ SQL عند التمديد.
     ['updated_at', 'TEXT']]);
-  addTableColumns('staff_tasks', [['cancelled_by', 'TEXT'], ['cancelled_at', 'TEXT'], ['reminder_sent_at', 'TEXT'], ['priority', "TEXT NOT NULL DEFAULT 'normal'"], ['tags', "TEXT DEFAULT '[]'"], ['mission_id', 'TEXT'], ['team_id', 'TEXT']]);
+  addTableColumns('staff_tasks', [['cancelled_by', 'TEXT'], ['cancelled_at', 'TEXT'], ['reminder_sent_at', 'TEXT'], ['priority', "TEXT NOT NULL DEFAULT 'normal'"], ['tags', "TEXT DEFAULT '[]'"], ['mission_id', 'TEXT'], ['team_id', 'TEXT'], ['parent_task_id', 'INTEGER']]);
+  database.exec('CREATE INDEX IF NOT EXISTS idx_tasks_parent ON staff_tasks(parent_task_id, status)');
+  migrateLegacyTeamChildren(database);
 
 // جدول قوالب المهام
 const missionTableExists = database.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='mission_templates'`).get();
@@ -559,8 +703,10 @@ if (progressTableExists) {
   for (const [name, definition] of additions) {
     if (!columns.has(name)) database.exec(`ALTER TABLE mission_progress ADD COLUMN ${name} ${definition}`);
   }
+  migrateMissionProgressParents(database, columns);
 database.exec('CREATE INDEX IF NOT EXISTS idx_mission_progress_mission ON mission_progress(mission_id, user_id)');
 database.exec('CREATE INDEX IF NOT EXISTS idx_mission_progress_team ON mission_progress(team_id, status)');
+database.exec('CREATE INDEX IF NOT EXISTS idx_mission_progress_task ON mission_progress(task_id, user_id)');
 }
 
 // جدول قوالب الإجازات
@@ -582,52 +728,110 @@ if (leaveTemplatesTableExists) {
 }
 
 /**
- * ترحيل تصنيفات FAQ: أُزيل تصنيف «قوانين فريق الإشراف» (2) ودُمجت مدخلاته في
- * «قوانين الإدارة» (1)، وأُعيد ترقيم ما بعده ليبقى الترقيم متصلاً 1..10.
+ * ترحيل تصنيفات FAQ — جدول إصدارات، لا خريطة واحدة تتغير مع كل bumped version.
  *
- * يعمل مرة واحدة فقط (علامة في جدول settings) حتى لا يُعاد الترقيم مرتين،
- * وكل التغييرات داخل معاملة واحدة: إمّا أن تكتمل أو لا يحدث شيء.
+ * الإصدار 2: أُزيل تصنيف «قوانين فريق الإشراف» (2) ودُمجت مدخلاته في «قوانين
+ * الإدارة» (1)، وأُعيد ترقيم ما بعده ليبقى الترقيم متصلاً 1..10.
+ *
+ * لماذا جدول ولماذا الخريطة مربوطة بإصدارها: العلامة كانت تحمي البيانات فقط
+ * في الشكل القديم (سلسلة واحدة تساوي '2'، والجسم في متغير واحد). رفع الإصدار
+ * إلى '3' مع بقاء خريطة الإصدار 2 في مكانها يجعل التشغيل الثاني يطبّق خريطة
+ * الإصدار 2 على بيانات مُعاد ترقيمها — وهي ليست idempotent (3 ← 2 ← 1)، فتنهار
+ * البنية تدريجياً نحو 1 بلا رجعة. أي أن العلامة التي تحمي البيانات هي نفسها
+ * التي تُحرَّر. الآن كل خطوة تحمل خريطتها داخل الجدول: رفع الإصدار ينفّذ خريطة
+ * الإصدار الجديد، ولا يُعاد تطبيق خريطة قديمة على بيانات طبّقتها أصلاً.
+ *
+ * كل الخطوات داخل معاملة واحدة: إمّا أن تكتمل أو لا يحدث شيء.
  * جداول السجل (faq_history وfaq_template_history) لا تُمسّ — تبقى كما كُتبت وقتها.
  */
-const FAQ_CATEGORY_REMAP = { 1: 1, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7, 9: 8, 10: 9, 11: 10 };
 const FAQ_MIGRATION_KEY = 'schema_faq_categories';
-const FAQ_MIGRATION_VERSION = '2';
+const FAQ_MIGRATIONS = {
+  2: {
+    remap: { 1: 1, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7, 9: 8, 10: 9, 11: 10 },
+    applyEntries: true,
+    applyTemplates: true,
+  },
+};
+/** أعلى إصدار مُعرَّف في الجدول — ترفعه عند إضافة خطوة جديدة، لا عند تعديل خريطة قديمة. */
+const FAQ_MIGRATION_VERSION = 2;
+/** نسخة للتوافق مع أي قارئ قديم لـ FAQ_CATEGORY_REMAP (خريطة الإصدار 2). */
+const FAQ_CATEGORY_REMAP = FAQ_MIGRATIONS[FAQ_MIGRATION_VERSION].remap;
 
-function migrateFaqCategories(database) {
-  const done = database.prepare('SELECT value FROM settings WHERE key = ?').get(FAQ_MIGRATION_KEY);
-  if (done?.value === FAQ_MIGRATION_VERSION) return;
+/** إصدارات الترحيل التي تعلو إصدار قاعدة البيانات، مرتبة. لا شيء ⇒ لا عمل. */
+function pendingFaqVersions(current, migrations = FAQ_MIGRATIONS) {
+  const latest = Math.max(0, ...Object.keys(migrations).map(Number));
+  if (!Number.isFinite(current) || current >= latest) return [];
+  const out = [];
+  for (let v = current + 1; v <= latest; v++) {
+    if (migrations[v]) out.push(v); // خطوة بلا تعريف تُخطّى ولا توقف ما بعدها
+  }
+  return out;
+}
 
+/** Applies one step with its own map - never another step's map. */
+function runFaqStep(database, step) {
   const parseIds = (raw) => {
     try { const v = JSON.parse(raw || '[]'); return Array.isArray(v) ? v.map(Number) : []; } catch { return []; }
   };
-  const remap = (ids) => [...new Set(ids.map(id => FAQ_CATEGORY_REMAP[id]).filter(id => Number.isInteger(id)))];
-
-  const run = database.transaction(() => {
+  let moved = 0;
+  if (step.applyEntries) {
     const entries = database.prepare('SELECT id, category_id FROM faq_entries').all();
     const moveEntry = database.prepare('UPDATE faq_entries SET category_id = ? WHERE id = ?');
-    let moved = 0;
     for (const row of entries) {
-      const next = FAQ_CATEGORY_REMAP[row.category_id];
+      const next = step.remap[row.category_id];
       if (next != null && next !== row.category_id) { moveEntry.run(next, row.id); moved++; }
     }
+  }
+  if (step.applyTemplates) {
     // قوالب FAQ تخزّن التصنيفات كمصفوفة JSON — نُعيد ترقيمها بالقاعدة نفسها،
     // فالتصنيف المحذوف (2) يصبح «قوانين الإدارة» (1) بدل أن يختفي محتوى القالب.
     const rows = database.prepare('SELECT id, category_ids FROM faq_templates').all();
     const moveTemplate = database.prepare('UPDATE faq_templates SET category_ids = ? WHERE id = ?');
     for (const row of rows) {
       const before = parseIds(row.category_ids);
-      const after = remap(before);
+      const after = [...new Set(before.map(id => step.remap[id]).filter(id => Number.isInteger(id)))];
       if (JSON.stringify(before) !== JSON.stringify(after)) moveTemplate.run(JSON.stringify(after), row.id);
     }
-    // عَلَم التشغيل يُكتب داخل المعاملة نفسها. كان يُكتب بعدها، فموت البوت بين
-    // COMMIT والعلامة يجعل الخريطة تُعاد على بيانات مُعاد ترقييمها — وهي ليست
-    // idempotent (3 ← 2 ← 1)، فتُهبط كل التصنيفات إلى 1 بلا رجعة.
-    database.prepare(`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
-      .run(FAQ_MIGRATION_KEY, FAQ_MIGRATION_VERSION);
-    return moved;
-  });
-  const moved = run();
+  }
+  return moved;
+}
+
+function readFaqMigrationVersion(database) {
+  const done = database.prepare('SELECT value FROM settings WHERE key = ?').get(FAQ_MIGRATION_KEY);
+  const parsed = Number.parseInt(done?.value ?? '', 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * ينفّذ الخطوات التي تعلو إصدار قاعدة البيانات، ويكتب العلامة.
+ *
+ * `migrations` and `target` default to the production table; passing a synthetic
+ * table is what proves a bump runs the NEW map - with the real table alone there is
+ * table is what proves a bump runs the NEW map - with the real table alone there is
+ * no way to observe a step that has not been written yet.
+ *
+ * @returns {number} عدد المداخل التي نُقلت
+ */
+function applyFaqMigrations(database, migrations = FAQ_MIGRATIONS, target = FAQ_MIGRATION_VERSION) {
+  const current = readFaqMigrationVersion(database);
+  const pending = pendingFaqVersions(current, migrations).filter(v => v <= target);
+  if (!pending.length) return 0; // قاعدة عند الإصدار الهدف لا تُمسّ، ولا تُكتب علامتها من جديد
+  let moved = 0;
+  for (const version of pending) moved += runFaqStep(database, migrations[version]);
+  // عَلَم التشغيل يُكتب داخل المعاملة نفسها (المُنادي يفتحها). كان يُكتب بعدها،
+  // فموت البوت بين COMMIT والعلامة يجعل الخريطة تُعاد على بيانات مُعاد تقييمها.
+  database.prepare(`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
+    .run(FAQ_MIGRATION_KEY, String(target));
+  return moved;
+}
+
+function migrateFaqCategories(database) {
+  // قراءة العلامة داخل المعاملة: كان الفحص خارجها، فلا حارس بين عمليتين تقلعان
+  // معاً — كلاهما يرى «لم تُنفَّذ» فيطبّقان الخريطة نفسها على بعضهما. وتبدأ
+  // المعاملة بـ BEGIN IMMEDIATE (لا deferred) لئلا تتفرّج عمليتان على نفس اللقطة
+  // ثم تتسابقان على الكتابة؛ الآن الثانية تنتظر أو تفشل بصراحة لا بفساد صامت.
+  const moved = database.transaction(() => applyFaqMigrations(database)).immediate();
   if (moved) console.log(`[migrate] FAQ: أُعيد ترقيم ${moved} مدخلاً بعد إزالة تصنيف «قوانين فريق الإشراف».`);
 }
 
@@ -651,4 +855,10 @@ function openMemoryDb() {
   return db;
 }
 
-module.exports = { getDb, openMemoryDb, migrateFaqCategories, FAQ_CATEGORY_REMAP };
+module.exports = {
+  getDb, openMemoryDb, migrate, migrateFaqCategories,
+  FAQ_CATEGORY_REMAP, FAQ_MIGRATIONS, FAQ_MIGRATION_KEY, FAQ_MIGRATION_VERSION,
+  pendingFaqVersions, runFaqStep, readFaqMigrationVersion, applyFaqMigrations,
+  duplicateTicketSources, assertNoDuplicateTicketSources,
+  migrateLegacyTeamChildren, migrateMissionProgressParents,
+};
