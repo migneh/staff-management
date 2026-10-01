@@ -13,15 +13,26 @@ function record({ action, actorId = null, targetId = null, details = null, chann
   return result.lastInsertRowid;
 }
 
-function list({ actorId, targetId, limit = 15, action = null, since = null } = {}) {
+/** clamps a caller-supplied paging number into a sane, bounded range */
+const pageNum = (v, fallback, max) => {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.min(Math.floor(n), max);
+};
+
+function list({ actorId, targetId, limit = 15, offset = 0, action = null, since = null } = {}) {
   let sql = 'SELECT * FROM audit_logs WHERE 1=1';
   const params = [];
   if (actorId) { sql += ' AND actor_id = ?'; params.push(actorId); }
   if (targetId) { sql += ' AND target_id = ?'; params.push(targetId); }
   if (action) { sql += ' AND action = ?'; params.push(action); }
   if (since) { sql += ' AND created_at >= ?'; params.push(since); }
-  sql += ' ORDER BY id DESC LIMIT ?';
+  // LIMIT then OFFSET, in that order — SQLite rejects OFFSET before LIMIT.
+  // Without this the viewer was structurally capped at the newest 100 rows
+  // and no amount of client-side paging could reach older entries.
+  sql += ' ORDER BY id DESC LIMIT ? OFFSET ?';
   params.push(Math.min(Math.max(Number(limit) || 15, 1), 100));
+  params.push(pageNum(offset, 0, 1_000_000));
   return getDb().prepare(sql).all(...params);
 }
 
