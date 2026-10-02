@@ -136,14 +136,18 @@ describe('استرجاع المساحة: قاعدة ملف حقيقية', () => 
       assert.ok(freeBefore > 0, 'لم تنشأ صفحات حرة بعد الحذف');
 
       // شريحة واحدة فقط (وليس كل freelist) — هذه هي الخاصية: ميزانية صغيرة
-      const t0 = Date.now();
       db.exec(`PRAGMA incremental_vacuum(${retention.VACUUM_SLICE_PAGES})`);
-      const sliceMs = Date.now() - t0;
       const freeAfter = db.pragma('freelist_count', { simple: true });
 
       // الشريحة استردّت شيئاً ولم تسترد كل freelist (ميزانية محدودة)
       assert.ok(freeAfter < freeBefore, `الشريحة لم تسترد شيئاً: ${freeAfter} >= ${freeBefore}`);
-      assert.ok(sliceMs < 1000, `شريحة واحدة استغرقت ${sliceMs}ms — تجميد`);
+      // ★ الخاصية الحاسمة بدل مهلة زمنية: الشريحة أنجزت عملاً **محدوداً** —
+      // استرجعت صفحاً لا يتجاوز عددها حصة الشريحة. هذه هي ضدّية تجميد
+      // الحلقة الأصلية (106 ثانية)، لكنها مُشتقة من عدّ الصفحات لا من الساعة:
+      // مهلة `sliceMs < 1000` كانت تعتمد على سرعة المعالج (قِيست 90–273ms عبر
+      // 6 عمليات تشغيل) وتفلّ على مستودع بطيء، بينما حدّ الصفحة حتمي.
+      assert.ok(freeBefore - freeAfter <= retention.VACUUM_SLICE_PAGES,
+        `شريحة واحدة استرجعت ${freeBefore - freeAfter} صفحة — تتجاوز حصة ${retention.VACUUM_SLICE_PAGES}`);
 
       // ★ الأمان: البيانات سليمة تماماً بعد الاسترجاع الجزئي
       const rowsAfter = db.prepare('SELECT COUNT(*) c FROM t').get().c;
