@@ -7,7 +7,7 @@ const { getDb } = require('../database');
 const ticketLogs = require('../services/ticketLogs');
 const audit = require('../services/audit');
 const staffService = require('../services/staff');
-const { rankInfo } = require('../services/permissions');
+const { actionRankDenial } = require('../services/permissions');
 const { COLORS, replyEphemeral, sendToChannel, dm, log } = require('../utils');
 const kit = require('../ui/kit');
 
@@ -67,25 +67,22 @@ function actionButtons(token) {
 const ID_RE = /^\d{15,22}$/;
 
 /**
- * بوابة تراتب الإجراءات: لا يُسجَّل إجراء على غير إداري، ولا على رتبة مساوية أو أعلى.
+ * بوابة تراتب الإجراءات: لا يُسجَّل إجراء على غير إداري.
  *
- * مصدر الرتبة ليس رتب ديسكورد بل جدول TEAM_RANKS في src/constants عبر
- * rankInfo(team, rank).level — وهو نفس المصدر الذي يقرأه src/services/score.js:145
- * وsrc/services/reports.js:67. نستبعد رتب ديسكورد لأنها قابلة للنتحال بنسخ الاسم.
- * المقارنة: level(الهدف) >= level(المنفّذ) يُرفض، فالتساوي مرفوض أيضاً
- * (قاعدة ديسكورد: لا يُنفَّذ إجراء على من هو في رتبتك أو أعلى). الطرفان على سُلّم LEVELS نفسه (١..٧)،
- * وi.staffLevel هو مستوى المنفّذ كما اشتقّه index.js من resolveStaff.
+ * مصدر الرتبة ليس رتب ديسكورد بل جدول TEAM_RANKS في src/constants — وهو نفس
+ * المصدر الذي يقرأه src/services/score.js:145 وsrc/services/reports.js:67.
+ * نستبعد رتب ديسكورد لأنها قابلة للنتحال بنسخ الاسم.
+ *
+ * المقارنة نفسها ليست هنا: بعدُاً معتمداً من صاحب المشروع صارت في
+ * permissions.actionRankDenial — المصدر الوحيد (هدف أعلى ⇒ رفض، هدف أدنى ⇒
+ * سماح، والتساوي يُفصل بين فريقين مرفوض وداخل الفريق ينظر إلى الترتيب).
+ * هذه الدالة تجلب الصف فقط وتنادي المصدر؛ لا يُعاد كتابة الشرط هنا.
  * @returns {string|null} رسالة الرفض، أو null إذا كان الإجراء مسموحاً.
  */
 function actionBlockedMessage(i, targetId) {
   const target = staffService.get(targetId);
   if (!target) return '❌ هذا العضو غير مسجل كإداري — لا يُسجَّل عليه إجراء.';
-  const targetLevel = rankInfo(target.team, target.rank)?.level;
-  if (targetLevel == null) return `❌ رتبة **${target.rank}** غير مربوطة بإعدادات البوت. شغّل **/sync-staff** أولاً.`;
-  if (targetLevel >= (i.staffLevel || 0)) {
-    return `❌ لا يمكنك تسجيل إجراء على **${target.rank}** — رتبتك أو ما فوقها. القاعدة: لا يُسجَّل إجراء على من هو في رتبتك أو أعلى.`;
-  }
-  return null;
+  return actionRankDenial({ team: i.staffInfo?.team, rank: i.staffInfo?.rank, level: i.staffLevel }, target);
 }
 
 /** أسباب جاهزة لكل نوع إجراء — تُختار بنقرة وتُدمج مع النص الحر. */
@@ -223,6 +220,7 @@ async function saveTicket(i, input, sourceLabel = 'يدوي') {
 
 module.exports = {
   modals,
+  actionBlockedMessage,
   commands: [
     {
       data: new SlashCommandBuilder().setName('log-ticket').setDescription('تسجيل تكت مغلق يدوياً (بديل عند تعطل سجل البوت الخارجي)')

@@ -17,6 +17,8 @@ const settings = require('../src/services/settings');
 const leavesService = require('../src/services/leaves');
 const { commands, resolveComponent } = require('../src/commands');
 const { accessContext, commandAccessError } = require('../src/services/commandAccess');
+const { actionRankDenial } = require('../src/services/permissions');
+const { actionBlockedMessage } = require('../src/commands/logging');
 const { LEVELS } = require('../src/constants');
 const { today, addDays } = require('../src/utils');
 
@@ -53,7 +55,7 @@ function interaction({ customId = '', id = IDS.me, level = LEVELS.STAFF, team = 
       channels: { fetch: async () => ({ send: async p => ({ id: '1', payload: p }) }) },
       users: { fetch: async () => ({ send: async () => {} }) },
     },
-    staffLevel: level, staffInfo: { team, level },
+    staffLevel: level, staffInfo: { team, rank, level },
     member: { id, permissions: { has: () => false }, roles: { cache: new Map() } },
     values, calls,
     fields: { getTextInputValue: k => texts[k] ?? '', getStringSelectValues: () => [] },
@@ -194,10 +196,23 @@ describe('/log-action — بوابة الهدف قبل الكتابة', () => {
     assert.match(i.calls.reply[0].embeds[0].toJSON().title, /تأكيد تسجيل/);
   });
 
-  // سلوك مقصود ومقفل: المقارنة على سُلّم LEVELS لا على ترتيب الرتب داخل الفريق،
-  // فـ Trial Moderator و Moderator يشتركان في المستوى ١ — وهما متساويان إذن والمرفوض بينهما.
-  test('رتبتان في المستوى نفسه تُعامَلان كمتساويتين — Moderator على Trial Moderator مرفوض', async () => {
+  // سلوك مقصود ومقفل بعد الإصلاح المعتمد من صاحب المشروع: داخل الفريق الواحد
+  // تنظر المقارنة إلى الترتيب لا إلى تساوي LEVELS، فـ Trial Moderator و
+  // Moderator يشتركان في المستوى ١ ومع ذلك يجوز للمoderator أن يسجّل على
+  // Trial Moderator — الزوج الثالث الذي قاسه التدقيق ووثّقه. الرتبة
+  // المتطابقة تبقى مرفوضة، والحراسة بعدها تثبت ذلك في البوابة الحيّة نفسها.
+  test('رتبتان في المستوى نفسه داخل الفريق: Moderator على Trial Moderator مسموح بعد الإصلاح', async () => {
     seedStaff(IDS.peer, 'moderation', 'Trial Moderator');
+    const i = interaction({ customId: 'modaction:log:warn', level: LEVELS.STAFF,
+      id: IDS.me, team: 'moderation', rank: 'Moderator',
+      texts: { target: IDS.peer, reason: 'سبب', duration: 'none' } });
+    await resolveComponent('modaction:log:warn').handler(i, ['warn']);
+    assert.match(text(i.calls), /تأكيد تسجيل/, 'وصلت البطاقة بدل الرفض — التوسيع حيّ في مسار الإجراء');
+    assert.equal(i.calls.reply.length, 1);
+  });
+
+  test('الرتبة المتطابقة تبقى مرفوضة في البوابة الحيّة: Moderator على Moderator', async () => {
+    seedStaff(IDS.peer, 'moderation', 'Moderator');
     const i = interaction({ customId: 'modaction:log:warn', level: LEVELS.STAFF,
       id: IDS.me, team: 'moderation', rank: 'Moderator',
       texts: { target: IDS.peer, reason: 'سبب', duration: 'none' } });
@@ -246,5 +261,127 @@ describe('سلامة ما بعد الإصلاح', () => {
     seedLeave(IDS.me, 'approved');
     assert.ok(leavesService.allowance(IDS.me));
     assert.equal(leavesService.pendingForUser(IDS.me).length, 0);
+  });
+});
+
+/**
+ * تساوي المستوى داخل الفريق — الإصلاح المعتمد من صاحب المشروع:
+ * نفس الفريق + مستوى متساوٍ ⇒ الترتيب داخل مصفوفة الفريق يحكم، فالرتبة
+ * الأعلى فعلاً (فهرس أكبر) تُجيز العمل على الأدنى. كل ما عداه يبقى كما كان:
+ * بين الفرق يحكم المستوى، والمستوى الأدنى لا يصعد أبداً، والرتبة المتطابقة
+ * مرفوضة. الأزواج الثلاثة المسموحة أدناه هي ما قاسه التدقيق ووثّقه،
+ * وكل حراسة هنا تثبت أن الإصلاح لم يفتح ثغرة جديدة معها.
+ */
+describe('بوابة تراتب الرتب — تساوي المستوى داخل الفريق', () => {
+  const actor = (team, rank, level) => ({ team, rank, level });
+  const target = (team, rank) => ({ team, rank });
+  const mustAllow = denial => assert.equal(denial, null, 'كان يجب أن يُسمح');
+  const mustRefuse = (denial, re = /رتبتك أو ما فوقها/) => assert.match(String(denial), re);
+
+  // ===== الأزواج الثلاثة التي قاسها التدقيق: أصبحت مسموحة =====
+  test('الزوج ١: Support على Helper — نفس الفريق والمستوى ١: مسموح', () => {
+    mustAllow(actionRankDenial(actor('support', 'Support', LEVELS.STAFF), target('support', 'Helper')));
+  });
+
+  test('الزوج ٢: Support Analyst على Support Expert — نفس الفريق والمستوى ٢: مسموح', () => {
+    mustAllow(actionRankDenial(actor('support', 'Support Analyst', LEVELS.SENIOR), target('support', 'Support Expert')));
+  });
+
+  test('الزوج ٣: Moderator على Trial Moderator — نفس الفريق والمستوى ١: مسموح', () => {
+    mustAllow(actionRankDenial(actor('moderation', 'Moderator', LEVELS.STAFF), target('moderation', 'Trial Moderator')));
+  });
+
+  // ===== حراسات: الإصلاح لم يفتح ثغرة =====
+  test('مستوى متساوٍ وفريق مختلف: Supervisor Manager (الدعم) على Admin (الإشراف) مرفوض', () => {
+    mustRefuse(actionRankDenial(actor('support', 'Supervisor Manager', LEVELS.SUPERVISOR), target('moderation', 'Admin')));
+  });
+
+  test('مستوى متساوٍ وفريق مختلف بالاتجاه المعاكس: Admin على Supervisor Manager مرفوض', () => {
+    mustRefuse(actionRankDenial(actor('moderation', 'Admin', LEVELS.SUPERVISOR), target('support', 'Supervisor Manager')));
+  });
+
+  test('الانخفاض المطلق لا يصعد: Support على Support Analyst مرفوض', () => {
+    mustRefuse(actionRankDenial(actor('support', 'Support', LEVELS.STAFF), target('support', 'Support Analyst')));
+  });
+
+  test('الاتجاه المعاكس منضبط: Support Analyst على Helper مسموح (أعلى على أدنى)', () => {
+    mustAllow(actionRankDenial(actor('support', 'Support Analyst', LEVELS.SENIOR), target('support', 'Helper')));
+  });
+
+  test('الرتبة المتطابقة مرفوضة: Moderator على Moderator لا تمرّ بالتساوي', () => {
+    mustRefuse(actionRankDenial(actor('moderation', 'Moderator', LEVELS.STAFF), target('moderation', 'Moderator')));
+  });
+
+  test('فهرس أدنى داخل المستوى نفسه مرفوض: Helper على Support', () => {
+    mustRefuse(actionRankDenial(actor('support', 'Helper', LEVELS.STAFF), target('support', 'Support')));
+  });
+
+  test('زوج كان مسموحاً يبقى مسموحاً: Head Of Moderators على Admin', () => {
+    mustAllow(actionRankDenial(actor('moderation', 'Head Of Moderators', LEVELS.MANAGEMENT), target('moderation', 'Admin')));
+  });
+
+  test('هدف أعلى عبر فريقين مرفوض: Moderator على Co General Manager', () => {
+    mustRefuse(actionRankDenial(actor('moderation', 'Moderator', LEVELS.STAFF), target('general_management', 'Co General Manager')));
+  });
+
+  test('رتبة هدف غير مربوطة تُرفض — الفشل مغلق كما كان', () => {
+    mustRefuse(actionRankDenial(actor('support', 'Support', LEVELS.STAFF), target('support', 'رتبة غير موجودة')), /غير مربوطة بإعدادات البوت/);
+  });
+
+  test('مالك بلا رتبة (مستوى GM): هدف أدنى يمرّ، وGeneral Manager آخر مرفوض', () => {
+    mustAllow(actionRankDenial({ level: LEVELS.GENERAL_MANAGER }, target('support', 'Boss')));
+    mustRefuse(actionRankDenial({ level: LEVELS.GENERAL_MANAGER }, target('general_management', 'General Manager')));
+  });
+});
+
+/**
+ * البوابة الحيّة نفسها: actionBlockedMessage في src/commands/logging.js هي
+ * ما يمرّ عليه فعل log-action وmodaction:log. اختبارات الدالة actionRankDenial
+ * وحدها لا تثبت أن هذه البوابة تستدعيها فعلاً (التوثيق لا يُعدّ اتصالاً) —
+ * فنمرّر الحالات الأربع عبر المسار الحيّ: السماح الموسّع، ومنع التوسيع بين
+ * الفرق، والصعود المطلق، ورفض غير المسجَّل.
+ */
+describe('بوابة logging الحيّة — actionBlockedMessage تستدعي actionRankDenial', () => {
+  const TARGET = IDS.peer;
+
+  test('الزوج المعتمد يمرّ عبر البوابة الحيّة: Support على Helper', () => {
+    const i = interaction({ id: IDS.me, team: 'support', rank: 'Support', level: LEVELS.STAFF });
+    seedStaff(TARGET, 'support', 'Helper');
+    assert.equal(actionBlockedMessage(i, TARGET), null, 'التوسيع المعتمد لم يصل إلى البوابة الحيّة');
+  });
+
+  test('التوسيع لم يُفتح بين الفرق: مستوى متساوٍ Support/Admin يُرفض في البوابة الحيّة', () => {
+    const i = interaction({ id: IDS.me, team: 'support', rank: 'Supervisor Manager', level: LEVELS.SUPERVISOR });
+    seedStaff(TARGET, 'moderation', 'Admin');
+    assert.match(String(actionBlockedMessage(i, TARGET)), /رتبتك أو ما فوقها/);
+  });
+
+  test('الصعود المطلق ما زال مرفوضاً في البوابة الحيّة: Support على Support Analyst', () => {
+    const i = interaction({ id: IDS.me, team: 'support', rank: 'Support', level: LEVELS.STAFF });
+    seedStaff(TARGET, 'support', 'Support Analyst');
+    assert.match(String(actionBlockedMessage(i, TARGET)), /رتبتك أو ما فوقها/);
+  });
+
+  test('غير المسجَّل كإداري يُرفض برسالة مميّزة كما قبل الإصلاح', () => {
+    const i = interaction({ id: IDS.me, team: 'support', rank: 'Support', level: LEVELS.STAFF });
+    assert.match(String(actionBlockedMessage(i, '999999999999999999')), /غير مسجل كإداري/);
+  });
+});
+
+describe('بوابة الفريق على مسار الأوامر — نفس تجاوز المكوّنات', () => {
+  test('مالك السيرفر بلا رتبة فريق يمرّ بوابة /add-note', () => {
+    const i = interaction({ id: IDS.me, level: LEVELS.GENERAL_MANAGER, team: null, seed: false });
+    i.member.guild = { ownerId: IDS.me };
+    const ctx = accessContext(i);
+    assert.equal(ctx.serverManager, true, 'isServerManager يلتقط المالك من guild.ownerId');
+    assert.equal(commandAccessError(commands.get('add-note'), ctx), null,
+      'تجاوز Server Manager لبوابة الفريق يجب أن يصل المسارين معاً');
+  });
+
+  test('من دون تجاوز: بوابة الفريق نفسها ترفض من ليس Server Manager', () => {
+    const i = interaction({ id: IDS.me, level: LEVELS.GENERAL_MANAGER, team: null, seed: false });
+    const ctx = accessContext(i);
+    assert.equal(ctx.serverManager, false);
+    assert.match(commandAccessError(commands.get('add-note'), ctx), /فريق الإشراف/);
   });
 });

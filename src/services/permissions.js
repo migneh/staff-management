@@ -59,6 +59,41 @@ function rankInfo(team, rankName) {
   return TEAM_RANKS[team]?.find(r => r.name === rankName) || null;
 }
 
+/**
+ * بوابة تراتب الإجراءات: هل يُرفض تسجيل إجراء على الهدف؟
+ *
+ * القاعدة الأصلية كما هي: هدف أعلى من المنفّذ ⇒ رفض، هدف أدنى ⇒ سماح،
+ * والمستويات تُقارن عبر سُلّم LEVELS أينما كان الطرفان. الاستثناء المعتمد
+ * من صاحب المشروع: نفس الفريق + مستوى متساوٍ ⇒ يُنظر إلى الترتيب داخل
+ * مصفوفة الفريق، فالرتبة الأعلى فعلاً (فهرس أكبر) تُجيز العمل على الأدنى —
+ * فلا تُحجب أزواج التساوي داخل فريق واحد بعد الآن. الرتبة المتطابقة تبقى
+ * مرفوضة، والمستوى الأدنى لا يصعد إلى الأعلى أبداً، والتساوي بين فريقين
+ * مختلفين يبقى مرفوضاً. الرتبة غير المربوطة تُرفض كما كانت (إغلاق مقصود).
+ *
+ * هذه الدالة هي المصدر الوحيد للمقارنة؛ من يملك بوابة هدف يستدعيها هنا
+ * ولا يعيد كتابة شرطها.
+ *
+ * @param {{team?:string, rank?:string, level?:number}} actor منفّذ الإجراء — من i.staffInfo مع مستوى i.staffLevel
+ * @param {{team:string, rank:string}} target صف staff_members الخاص بالهدف
+ * @returns {string|null} رسالة الرفض، أو null إذا كان الإجراء مسموحاً.
+ */
+function actionRankDenial(actor, target) {
+  const targetRank = rankInfo(target.team, target.rank);
+  if (!targetRank) return `❌ رتبة **${target.rank}** غير مربوطة بإعدادات البوت. شغّل **/sync-staff** أولاً.`;
+  const denial = `❌ لا يمكنك تسجيل إجراء على **${target.rank}** — رتبتك أو ما فوقها. القاعدة: لا يُسجَّل إجراء على من هو في رتبتك أو أعلى.`;
+  const actorLevel = actor?.level || 0;
+  if (targetRank.level < actorLevel) return null;   // هدف أدنى ⇒ مسموح — كما كان.
+  if (targetRank.level > actorLevel) return denial; // هدف أعلى ⇒ مرفوض مطلقاً — كما كان.
+  // المستوى متساوٍ: بين فريقين يبقى الرفض، وداخل الفريق يحكم الترتيب.
+  if (actor?.team && actor.team === target.team) {
+    const ladder = TEAM_RANKS[target.team];
+    const actorIndex = ladder.findIndex(r => r.name === actor.rank);
+    const targetIndex = ladder.findIndex(r => r.name === target.rank);
+    if (targetIndex >= 0 && actorIndex > targetIndex) return null; // أعلى فعلاً داخل الفريق
+  }
+  return denial;
+}
+
 function levelName(level) {
   return Object.keys(LEVELS).find(k => LEVELS[k] === level) || 'NONE';
 }
@@ -75,5 +110,5 @@ const LEVEL_LABELS = {
 
 module.exports = {
   resolveStaff, getLevel, hasLevel, isBoss, isManagement, isSupervisor,
-  isServerManager, rankInfo, levelName, LEVEL_LABELS, TEAM_RANKS,
+  isServerManager, rankInfo, actionRankDenial, levelName, LEVEL_LABELS, TEAM_RANKS,
 };

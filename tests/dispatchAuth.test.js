@@ -199,3 +199,57 @@ test('maxLevel صفر يُنفَّذ ولا يُبتلع كـ falsy — الدر
     } finally { spyZero.restore(); }
   } finally { entry.level = original.level; entry.maxLevel = original.maxLevel; }
 });
+
+// ===== تجاوز Server Manager لبوابة الفريق على مسار المكوّنات =====
+// النسخة اليدوية القديمة من الفحوص في componentDispatch كانت تحمل
+// `&& !context.serverManager` على فحص الفريق، وضاعت عند التوحيد مع
+// commandAccess. المالك/الدور الحاكم يُصرَّف له الزرّ كما يُصرَّف له الأمر.
+
+test('مالك السيرفر بلا رتبة فريق يصل إلى مكوّن خاص بفريق آخر — التجاوز مستعاد', async () => {
+  // السياق الواقعي كما يبنيه index.js:178-181 لمالك بلا رتبة فريق:
+  // staffLevel = GENERAL_MANAGER وstaffInfo غير معرَّف ⇒ context.team فارغ.
+  const i = interaction({ id: 'owner-sm', level: LEVELS.GENERAL_MANAGER, team: null });
+  i.member.guild = { ownerId: i.user.id };
+  i.customId = customIdFor('modaction:log');
+  const spy = spyOn('modaction:log');
+  try {
+    await dispatch(i);
+    assert.equal(spy.calls.length, 1, 'تجاوز Server Manager لبوابة الفريق مفقود — الزرّ رُفض رغم سماح مسار الأوامر');
+    assert.equal(i.replied, undefined, 'لا ردّ رفض بعد السماح');
+  } finally { spy.restore(); }
+});
+
+test('الدور الحاكم المعدّ في /setup يحصل على نفس التجاوز بلا رتبة فريق', async () => {
+  settings.setGovernanceRole('gov-role-1');
+  const i = interaction({ id: 'gov-sm', level: LEVELS.GENERAL_MANAGER, team: null });
+  i.member.roles.cache.set('gov-role-1', true);
+  i.customId = customIdFor('modaction:log');
+  const spy = spyOn('modaction:log');
+  try {
+    await dispatch(i);
+    assert.equal(spy.calls.length, 1, 'isServerManager عبر الدور الحاكم لا ينفع على مسار المكوّنات');
+    assert.equal(i.replied, undefined, 'لا ردّ رفض بعد السماح');
+  } finally { spy.restore(); }
+});
+
+test('لا يمتد تجاوز Server Manager إلى عضو بلا أي رتبة', async () => {
+  const i = outsider();
+  i.customId = customIdFor('modaction:log');
+  const spy = spyOn('modaction:log');
+  try {
+    await dispatch(i);
+    assert.equal(spy.calls.length, 0, 'عضو بلا رتبة بلغ معالجاً خاصاً بفريق آخر');
+    assert.match(textOf(i), /كل الإداريين/, 'سبب الرفض هو الباب العمومي لا تجاوز المالك');
+  } finally { spy.restore(); }
+});
+
+test('لا يمتد تجاوز Server Manager إلى إداري فريق آخر — بوابة الفريق تبقى مطبقة', async () => {
+  const i = interaction({ id: 'supporter', level: LEVELS.STAFF, team: 'support' });
+  i.customId = customIdFor('modaction:log');
+  const spy = spyOn('modaction:log');
+  try {
+    await dispatch(i);
+    assert.equal(spy.calls.length, 0, 'إداري دعم بلغ معالج إشراف — التجاوز اتّسع للجميع بدل المالك وحده');
+    assert.match(textOf(i), /فريق الإشراف/, 'سبب الرفض هو بوابة الفريق');
+  } finally { spy.restore(); }
+});

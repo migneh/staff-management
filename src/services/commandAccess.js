@@ -27,7 +27,11 @@ function commandAccessError(command, context) {
   // `maxLevel: 0` تعني «لا أحد دون GM». الفحص القديم `command.maxLevel &&` كان
   // يبتلع الصفر لأنه falsy — فيحصل ذلك الأمر بلا حدّ أعلى إطلاقاً.
   if (command.maxLevel != null && level > command.maxLevel) return 'هذا الأمر غير متاح لرتبتك.';
-  if (command.team && context.team !== command.team) return `هذا الأمر خاص بـ **${TEAMS[command.team]}**.`;
+  // تجاوز مالك السيرفر/Server Manager لبوابة الفريق: يُدير الفريقين حتى دون رتبة فيه.
+  // هذا الفحص كان موجوداً في النسخة اليدوية القديمة من فحوص المكوّنات
+  // (componentDispatch قبل التوحيد) وضاع منها؛ يُستعاد هنا في المصدر الوحيد
+  // لسياسات الوصول فيصل المساران (Slash والمكوّنات) إلى نتيجة واحدة.
+  if (command.team && context.team !== command.team && !context.serverManager) return `هذا الأمر خاص بـ **${TEAMS[command.team]}**.`;
   if (context.suspended && !SUSPENDED_ALLOWED.has(command.data.name)) return 'حسابك الإداري موقوف حالياً. يمكنك مراجعة سجلك من /my-record.';
   return null;
 }
