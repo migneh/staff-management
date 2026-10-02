@@ -51,7 +51,7 @@ module.exports = {
       },
     },
     {
-      data: new SlashCommandBuilder().setName('maintenance').setDescription('صيانة البيانات: تجميع النشاط القديم وتقليم السجلات (مع معاينة)')
+      data: new SlashCommandBuilder().setName('maintenance').setDescription('صيانة البيانات: تقليم النشاط والسجلات القديمة (مع معاينة)')
         .addBooleanOption(o => o.setName('dry_run').setDescription('عرض ما سيُحذف دون تنفيذ (الافتراضي: نعم)'))
         .addBooleanOption(o => o.setName('confirm').setDescription('تأكيد التنفيذ الفعلي')),
       level: LEVELS.BOSS,
@@ -60,25 +60,24 @@ module.exports = {
         await i.deferReply({ ephemeral: true });
         const dryRun = !(i.options.getBoolean('confirm') || false);
         const r = retention.run({ dryRun });
-        // months = أشهر متمايزة دائماً (retention.rollupActivity يضمن المعنى
-        // الواحد في المسارين). وkit.plural يجعل العدد العربي صحيحاً: شهر واحد /
-        // شهران / N أشهر / N شهراً، بدل «1 شهراً» في كل الحالات.
-        const monthsWord = kit.plural(r.rollup.months, 'شهر واحد', 'شهران', '{n} أشهر', '{n} شهراً');
-        const monthsLabel = `${r.rollup.months} (${monthsWord.replace('{n}', r.rollup.months)})`;
+        // الصياغة العربية للعدد: سجل واحد / سجلان / N سجلات / N سجلاً — والصفر
+        // يعود «0 سجل» لا «0 سجلاً». الرقم يظهر داخل الكلمة نفسها فلا تكرار.
+        const recordsWord = n => (n === 0 ? '0 سجل' : kit.plural(n, 'سجل واحد', 'سجلان', '{n} سجلات', '{n} سجلاً'));
         if (dryRun) {
           return i.editReply({
             embeds: [embed('🧪 معاينة صيانة البيانات', `${divider}\n`
-              + `📦 **الرسائل الخام قبل ${r.rollup.cutoff}:** ستُجمَّع في ${monthsLabel} (${r.rollup.rows} سجل) ثم تُحذف (${r.activity.pending} صف)\n`
-              + `📝 **سجل العمليات قبل ${r.audit.cutoff.slice(0, 7)}:** ${r.audit.pending} سجل\n`
+              + `📦 **الرسائل الخام أقدم من ${r.activity.cutoff}:** سيُحذف **${recordsWord(r.activity.pending)}** من النشاط — بلا تجميع يحفظها\n`
+              + `📝 **سجل العمليات أقدم من ${r.audit.cutoff.slice(0, 7)}:** ${r.audit.pending} سجل\n`
               + `🗄️ **حجم القاعدة:** ${r.sizeBeforeMb} م.ب\n\n`
+              + '⚠️ الحذف غير قابل للتراجع: ما تجاوز الحدّ لن يبقى في أي جدول ولا في تقرير شهري — التجميع الشهري أُلغي.\n'
               + 'لم يُحذف أي شيء. للتنفيذ: أعد الأمر مع `confirm: true`.', COLORS.info)],
           });
         }
         audit.record({ action: 'data_maintenance', actorId: i.user.id, details: r, channelId: i.channelId });
         return i.editReply({
           embeds: [embed('🧹 تمت صيانة البيانات', `${divider}\n`
-            + `📦 جُمّع **${r.rollup.rows}** سجل نشاط في **${monthsLabel}**\n`
-            + `🗑️ حُذف **${r.activity.deleted}** صف نشاط خام و**${r.audit.deleted}** سجل عمليات\n`
+            + `🗑️ حُذف **${recordsWord(r.activity.deleted)}** نشاط خام أقدم من **${r.activity.cutoff}** — بلا تجميع يحفظها\n`
+            + `🗑️ حُذف **${r.audit.deleted}** سجل عمليات\n`
             + `🗄️ الحجم: ${r.sizeBeforeMb} → **${r.sizeAfterMb}** م.ب${r.vacuumed ? ' (استُرجعت المساحة)' : ''}`, COLORS.success)],
         });
       },

@@ -15,7 +15,7 @@
  *   والأثر laterally: استرجاع المساحة أصبح **محدود الزمن** لا «كامل أو لا شيء».
  *
  * ★ التوثيق: هذا الملف يفرض صحّة الوعد بالذرّية (تعليق run() كان يدّعي معاملة
- *   واحدة، وrun() خمس وحدات منفصلة) وصيغة موحّدة بين دوال التقليم.
+ *   واحدة، وrun() أربع وحدات منفصلة) وصيغة موحّدة بين دوال التقليم.
  */
 process.env.DB_PATH = ':memory:';
 process.env.DOTENV_CONFIG_QUIET = 'true';
@@ -53,9 +53,9 @@ describe('retention على قاعدة ذاكرة: صيانة كاملة بلا �
 
     // كل جدول موجود قبل التشغيل موجود بعده، بنفس الاسم
     assert.deepEqual(Object.keys(after).sort(), Object.keys(before).sort(), 'تغيّر مجموعة الجداول');
-    // الشهر القديم صار مجمّعاً وخُذف خاماً
+    // الصف القديم خُذف خاماً — بلا تجميع يسبقه وبلا جدول شهري يعود
     assert.equal(after.activity_logs, 1, 'بقي الصف داخل النافذة فقط');
-    assert.equal(after.activity_monthly, 1);
+    assert.equal('activity_monthly' in after, false, 'activity_monthly أُلغيت لكنها عادت إلى العدّ');
     assert.equal(r.activity.deleted, 2);
     // vacuumed must be a boolean, never undefined
     assert.equal(typeof r.vacuumed, 'boolean');
@@ -70,7 +70,10 @@ describe('retention على قاعدة ذاكرة: صيانة كاملة بلا �
     assert.equal(dry.vacuumed, false, 'المعاينة استرجعت مساحة');
     // الأرقام التي تُعرض على المشغّل متطابقة
     assert.equal(dry.activity.pending, 1);
-    assert.equal(dry.rollup.rows, 1);
+    // تقرير المعاينة يحمل نفس مفاتيح تقرير التشغيل — وrollup المُلغى غائب
+    // منهما معاً، لا صفرًا منسياً يوهم بحدوث تجميع.
+    assert.equal('rollup' in dry, false, 'حقل التجميع المُلغى عاد إلى التقرير');
+    assert.deepEqual(Object.keys(dry).sort(), ['activity', 'audit', 'dryRun', 'ops', 'sizeAfterMb', 'sizeBeforeMb', 'vacuumed']);
   });
 
   test('كل دالة تقليم تُعيد نفس المفاتيح — قارئ .deleted لا يحصل على undefined', () => {

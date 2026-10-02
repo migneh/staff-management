@@ -47,7 +47,6 @@ module.exports = {
         const counts = retention.tableCounts();
         const sizeMb = retention.dbSizeMb();
         const lastCheck = db.prepare('SELECT * FROM backup_checks ORDER BY id DESC LIMIT 1').get() || null;
-        const rolledMonths = new Set(db.prepare('SELECT DISTINCT month FROM activity_monthly').all().map(r => r.month)).size;
         const lastBackup = backup.listBackups()[0];
         const st = settings.status();
         // أعطال المخطط الحيّة: البوت قد يقلع في وضع متدهور عمداً (انظر
@@ -70,7 +69,7 @@ module.exports = {
         const e = embed('🩺 صحة النظام', `${divider}`, COLORS.primary)
           .addFields(
             { name: '⏰ المهام المجدولة', value: lines.length ? lines.join('\n') : 'لا توجد مهام مسجّلة (المجدول لم يبدأ بعد).' },
-            { name: '🗄️ قاعدة البيانات', value: `الحجم: **${sizeMb} م.ب** ${sizeStatus}${sizeWarning}\nإداريون: **${counts.staff_members}** • نشاط خام: **${counts.activity_logs}** • أشهر مُجمَّعة: **${rolledMonths}**\nتكتات: **${counts.ticket_metrics}** • عمليات: **${counts.audit_logs}**\nسجل الرتب: **${counts.staff_rank_history}** • فحوص النسخ: **${counts.backup_checks}**`, inline: false },
+            { name: '🗄️ قاعدة البيانات', value: `الحجم: **${sizeMb} م.ب** ${sizeStatus}${sizeWarning}\nإداريون: **${counts.staff_members}** • نشاط خام: **${counts.activity_logs}**\nتكتات: **${counts.ticket_metrics}** • عمليات: **${counts.audit_logs}**\nسجل الرتب: **${counts.staff_rank_history}** • فحوص النسخ: **${counts.backup_checks}**`, inline: false },
           );
 
         // Add detailed database info if requested
@@ -81,7 +80,6 @@ module.exports = {
               const tableNames = {
                 staff_members: '👥 الإداريون',
                 activity_logs: '📝 نشاط خام',
-                activity_monthly: '📊 نشاط شهري',
                 ticket_metrics: '🎫 تكتات',
                 audit_logs: '📒 سجل العمليات',
                 staff_rank_history: '📜 تاريخ الرتب',

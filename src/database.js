@@ -49,17 +49,6 @@ CREATE TABLE IF NOT EXISTS staff_rank_history (
 );
 CREATE INDEX IF NOT EXISTS idx_rank_history_user ON staff_rank_history(user_id, created_at);
 
--- تجميع شهري للنشاط: يبقى بعد تقليم السجلات الخام
-CREATE TABLE IF NOT EXISTS activity_monthly (
-  user_id TEXT NOT NULL,
-  month TEXT NOT NULL,           -- YYYY-MM
-  messages INTEGER NOT NULL DEFAULT 0,
-  weighted REAL NOT NULL DEFAULT 0,
-  active_days INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY (user_id, month)
-);
-
 -- نتيجة فحص سلامة كل نسخة احتياطية: نسخة لم تُختبر ليست نسخة
 CREATE TABLE IF NOT EXISTS backup_checks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -689,6 +678,7 @@ const MIGRATION_STEPS = [
   'leave_templates_columns',
   'human_ratings_column',
   'faq_categories',
+  'drop_activity_monthly',
 ];
 
 /** يضمن وجود دفتر الإصدارات وسجل الأعطال حتى لو استُدعي migrate على قاعدة بلا SCHEMA. */
@@ -955,6 +945,12 @@ function migrate(database) {
   });
 
   runMigrationStep(database, 'faq_categories', () => { migrateFaqCategories(database); });
+
+  // جدول التجميع الشهري activity_monthly أُلغي: لم يكن يقرأه أحد سوى عدّاد
+  // أشهر واحد في /system-status، وكان ثمنه حفظ بيانات لا يستهلكها أحد. القاعدة
+  // القديمة تسقطه مرة واحدة ويُختم لها؛ والفريدة لا تراه أصلاً لأن SCHEMA لم
+  // تعد تنشئه — وDROP TABLE IF EXISTS هو نفسه في الحالتين.
+  runMigrationStep(database, 'drop_activity_monthly', () => database.exec('DROP TABLE IF EXISTS activity_monthly'));
 }
 
 /**

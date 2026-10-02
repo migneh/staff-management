@@ -1,23 +1,25 @@
 'use strict';
 /**
  * صيانة البيانات: جدول `activity_logs` يسجّل **صفاً لكل رسالة**، وبلا
- * تقليم يتحول إلى قنبلة موقوتة. هنا نُجمّع الأشهر القديمة في `activity_monthly`
- * ثم نحذف الصفوف الخام، ونقلّم سجل العمليات القديم، ثم نسترجع المساحة.
+ * تقليم يتحول إلى قنبلة موقوتة. هنا نحذف الصفوف الخام الأقدم من حدّ الاحتفاظ
+ * (12 شهراً) **بلا أي تجميع يحفظها**، ونقلّم سجل العمليات القديم، ثم نسترجع
+ * المساحة. لا يبقى تاريخ لأي شهر تجاوز الحدّ: جدول التجميع الشهري
+ * `activity_monthly` أُلغي، فمن مضى بالفعل يُمحى نهائياً لا يُلخَّص — وهذه
+ * الحقيقة معلنة في كل شاشة يقرأها المشغّل قبل أن يأذن بالحذف.
  *
- * مبدأ الأمان: لا يُحذف أي شيء قبل نجاح التجميع، ويمكن التشغيل بوضع المعاينة
- * (dryRun) لعرض ما سيحدث قبل حدوثه.
+ * مبدأ الأمان: المعاينة (dryRun) تعرض أعداد ما سيُحذف قبل حدوثه، ولا تحذف
+ * شيئاً.
  *
  * ★ الذرّية: `run()` ليست معاملة واحدة — كانت هذه العبارة توحي بغير ذلك. هي
- * خمس وحدات، **كل وحدة ذرّية وحدها لا مجتمعة**:
- *   1) التجميع  — كل الـ upserts داخل `db.transaction` واحدة: كلّها أو لا شيء.
- *   2) حذف النشاط — `DELETE` واحد: ذرّي بذاته.
- *   3) حذف سجل العمليات — `DELETE` واحد: ذرّي بذاته.
- *   4) حذف فحوص النسخ — `DELETE` واحد: ذرّي بذاته.
- *   5) استرجاع المساحة — خارج أي معاملة، لأن VACUUM وincremental_vacuum
+ * أربع وحدات، **كل وحدة ذرّية وحدها لا مجتمعة**:
+ *   1) حذف النشاط — `DELETE` واحد: ذرّي بذاته.
+ *   2) حذف سجل العمليات — `DELETE` واحد: ذرّي بذاته.
+ *   3) حذف فحوص النسخ — `DELETE` واحد: ذرّي بذاته.
+ *   4) استرجاع المساحة — خارج أي معاملة، لأن VACUUM وincremental_vacuum
  *      يرفضان العمل داخل معاملة أصلاً (SQLITE_ERROR). ولهذا يستحيل دمجها.
- * فالانقطاع بين 2 و3 يترك activity_logs مقصوصة وسجل العمليات باقياً: ناقص لا
- * متناقض. والترتيب بين 1 و2 مقصود: لا يُحذف صف قبل نجاح تجميعه، فإعادة التشغيل
- * تلتقط ما لم يُحذف. أما استعادة «كل شيء ذرّي» فتحتاجVACUUM معاملات — أي تغيير
+ * فالانقطاع بين 1 و2 يترك activity_logs مقصوصة وسجل العمليات باقياً: ناقص لا
+ * متناقض — وإعادة التشغيل تلتقط ما لم يُحذف لأن كل DELETE يُعيد نفسه بنفس
+ * النتيجة. وأما استعادة «كل شيء ذرّي» فتحتاج VACUUM معاملات — أي تغيير
  * في ملف قاعدة البيانات (لا أملكه) لإعادة فتح الاتصال بعد الاستبدال.
  *
  * ★ استرجاع المساحة: كان `VACUUM` الكلاسيكي يُجمّد حلقة الأحداث: على قاعدة
@@ -30,7 +32,7 @@ const config = require('../config');
 const logger = require('../logger').log('retention');
 const clock = require('../clock');
 
-/** كم شهراً نحتفظ فيه بالرسائل الخام (بعدها تُجمَّع وتُحذف) */
+/** كم شهراً نحتفظ فيه بالرسائل الخام (بعدها تُحذف بلا تجميع يحفظها) */
 const ACTIVITY_RETENTION_MONTHS = 12;
 /** كم شهراً نحتفظ فيه بسجل العمليات (audit_logs) */
 const AUDIT_RETENTION_MONTHS = 18;
@@ -64,37 +66,12 @@ function cutoffMonth(months = ACTIVITY_RETENTION_MONTHS, from = clock.today()) {
 }
 
 /**
- * يجمع أشهر النشاط القديمة في جدول التجميع.
+ * يحذف الصفوف الخام الأقدم من حدّ الاحتفاظ — بلا تجميع يسبقها.
  *
- * شكل الإرجاع واحد في المسارين — وهذا أصل العطب: المسار الجاف كان يُعيد
- * `months: rows.length` (عدد **الصفوف**) وناجح `months: <عدد الأشهر>`، فكان
- * `/maintenance` يطبع على شاشة المشغّل «سيُجمَّع في 1,440 شهراً» بدل 12، وهو
- * بالضبط Screen الذي يُبنى عليه قرار حذف غير قابل للتراجع.
- * الآن المعنى واحد:
- *   months = عدد **الأشهر المتمايزة**
- *   rows   = عدد **مجموعات (عضو × شهر)** المُدخلة
- * @returns {{months:number, rows:number, cutoff:string}} نفس الشكل دائماً
+ * كانت هذه الدالة تنتظر نجاح `rollupActivity` أولاً؛ وبعد إلغاء التجميع صارت
+ * هي وحدها: `COUNT` للمعاينة ثم `DELETE` للتنفيذ، ونفس الشكل `{deleted, pending, cutoff}`
+ * في المسارين فيقرأ المشغّل عدداً واحداً لا اثنين متناقضين.
  */
-function rollupActivity({ months = ACTIVITY_RETENTION_MONTHS, dryRun = false } = {}) {
-  const db = getDb();
-  const cutoff = cutoffMonth(months);
-  const rows = db.prepare(`SELECT user_id, substr(day, 1, 7) month, COUNT(*) messages,
-      COALESCE(SUM(weight), 0) weighted, COUNT(DISTINCT day) active_days
-    FROM activity_logs WHERE day < ? GROUP BY user_id, month`).all(`${cutoff}-01`);
-  const shape = { months: new Set(rows.map(r => r.month)).size, rows: rows.length, cutoff };
-  if (dryRun || !rows.length) return shape;
-  const upsert = db.prepare(`INSERT INTO activity_monthly (user_id, month, messages, weighted, active_days)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(user_id, month) DO UPDATE SET
-      messages = excluded.messages, weighted = excluded.weighted, active_days = excluded.active_days`);
-  const run = db.transaction((items) => {
-    for (const r of items) upsert.run(r.user_id, r.month, r.messages, Math.round(r.weighted * 100) / 100, r.active_days);
-  });
-  run(rows);
-  return shape;
-}
-
-/** يحذف الصفوف الخام التي جُمّعت فعلاً */
 function pruneActivity({ months = ACTIVITY_RETENTION_MONTHS, dryRun = false } = {}) {
   const db = getDb();
   const cutoff = `${cutoffMonth(months)}-01`;
@@ -174,7 +151,7 @@ function tableCounts() {
  *
  * التحويل لمرة واحدة يتطلّب VACUUM كاملاً، فمقيَّد بـ VACUUM_CONVERT_MAX_MB:
  * تحت 256 م.ب ثمنه بضع ميلي ثانية، فوقه نُبلغ المشغّل ولا نُجمد بوتاً كبيراً.
- * القاعدة القديمة —随访: أضف `PRAGMA auto_vacuum=INCREMENTAL` في database.js
+ * القاعدة القديمة — ملاحظة: أضف `PRAGMA auto_vacuum=INCREMENTAL` في database.js
  * لقواعد جديدة فيتولّى هذا الملف التحويل تلقائياً بلا تجميد من أول مرة.
  *
  * @returns {boolean} هل استُرجعت المساحة فعلاً
@@ -217,19 +194,20 @@ function vacuum() {
 }
 
 /**
- * صيانة كاملة: تجميع ثم تقليم ثم استرجاع مساحة — خمس وحدات ذرّية منفصلة
+ * صيانة كاملة: تقليم ثم استرجاع مساحة — أربع وحدات ذرّية منفصلة
  * (انظر أعلى الملف). المعاينة (dryRun) لا تكتب شيئاً وتُبلّغ بنفس الأرقام.
+ * لا حقل `rollup` في التقرير بعد الآن: التجميع أُلغي، فمن قرأه يجب أن يعرف
+ * أن الغياب ليس صفراً منسياً بل نهاءً للحقل نفسه.
  */
 function run({ dryRun = false, months = ACTIVITY_RETENTION_MONTHS, auditMonths = AUDIT_RETENTION_MONTHS } = {}) {
   const before = dbSizeMb();
-  const rollup = rollupActivity({ months, dryRun });
   const activity = pruneActivity({ months, dryRun });
   const audit = pruneAudit({ months: auditMonths, dryRun });
   const ops = pruneOperational({ dryRun });
   const vacuumed = dryRun ? false : vacuum();
-  const report = { rollup, activity, audit, ops, vacuumed, sizeBeforeMb: before, sizeAfterMb: dbSizeMb(), dryRun };
+  const report = { activity, audit, ops, vacuumed, sizeBeforeMb: before, sizeAfterMb: dbSizeMb(), dryRun };
   if (!dryRun) {
-    logger.info(`🧹 صيانة البيانات: جُمّع ${rollup.rows} سجل في ${rollup.months} شهراً • حُذف ${activity.deleted} صف نشاط • ${audit.deleted} سجل عمليات • ${ops.deleted} فحص نسخة • الحجم ${report.sizeBeforeMb} → ${report.sizeAfterMb} م.ب${vacuumed ? ' (استُرجعت المساحة)' : ''}`);
+    logger.info(`🧹 صيانة البيانات: حُذف ${activity.deleted} صف نشاط خام • ${audit.deleted} سجل عمليات • ${ops.deleted} فحص نسخة • الحجم ${report.sizeBeforeMb} → ${report.sizeAfterMb} م.ب${vacuumed ? ' (استُرجعت المساحة)' : ''}`);
   }
   return report;
 }
@@ -237,6 +215,6 @@ function run({ dryRun = false, months = ACTIVITY_RETENTION_MONTHS, auditMonths =
 module.exports = {
   ACTIVITY_RETENTION_MONTHS, AUDIT_RETENTION_MONTHS, BACKUP_CHECK_RETENTION_MONTHS,
   VACUUM_MIN_SIZE_MB, VACUUM_MIN_FREE_MB, VACUUM_CONVERT_MAX_MB, VACUUM_SLICE_PAGES,
-  cutoffMonth, rollupActivity, pruneActivity, pruneAudit, pruneOperational,
+  cutoffMonth, pruneActivity, pruneAudit, pruneOperational,
   run, dbSizeMb, tableCounts, vacuum,
 };

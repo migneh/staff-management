@@ -143,7 +143,7 @@ describe('تاريخ الرتب وعصور النقاط (Phase 2)', () => {
 });
 
 describe('صيانة البيانات (Phase 2)', () => {
-  test('التجميع يسبق الحذف: الأشهر القديمة تُلخّص ثم تُحذف صفوفها الخام', () => {
+  test('الأشهر القديمة تُحذف نهائياً ولا يبقى منها جدول شهري', () => {
     const db = getDb();
     const ins = db.prepare(`INSERT INTO activity_logs (user_id, channel_id, channel_type, weight, day) VALUES ('u','1','staff',0.25,?)`);
     for (let d = 1; d <= 10; d++) ins.run(`2024-01-${String(d).padStart(2, '0')}`);
@@ -152,14 +152,14 @@ describe('صيانة البيانات (Phase 2)', () => {
     const dry = retention.run({ dryRun: true });
     assert.equal(dry.activity.pending, 10, 'المعاينة تعرض ما سيُحذف');
     assert.equal(db.prepare('SELECT COUNT(*) c FROM activity_logs').get().c, 13, 'المعاينة لا تحذف شيئاً');
+    assert.equal('rollup' in dry, false, 'حقل التجميع المُلغى عاد إلى التقرير');
 
     const r = retention.run({ dryRun: false });
-    assert.equal(r.rollup.rows, 1);
-    const monthly = db.prepare("SELECT * FROM activity_monthly WHERE month = '2024-01'").get();
-    assert.equal(monthly.messages, 10);
-    assert.equal(monthly.active_days, 10);
-    assert.equal(r.activity.deleted, 10);
+    assert.equal(r.activity.deleted, 10, 'الصفوف الأقدم من الحدّ لم تُحذف');
     assert.equal(db.prepare('SELECT COUNT(*) c FROM activity_logs').get().c, 3, 'يبقى النشاط داخل النافذة');
+    // جدول التجميع الشهري أُلغي: غائب من المخطط الحيّ بعد أي مسار تشغيل
+    const monthly = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='activity_monthly'").get();
+    assert.equal(monthly, undefined, 'activity_monthly ما زال موجوداً رغم إلغائه');
   });
   test('التقليم يعمل على سجل العمليات فقط بعد المدة المحددة', () => {
     const db = getDb();
