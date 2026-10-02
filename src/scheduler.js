@@ -345,7 +345,7 @@ async function announceReminderGiveUps(client, tasks) {
   if (!tasks.length) return;
   const lines = tasks.slice(0, 15).map(t => `• <@${t.user_id}> — **#${t.id} ${t.title}** (${t.task_type})`).join('\n');
   await sendToChannel(client, 'staff-alerts', { embeds: [embed(`🚫 تعذّر تذكير مهام بعد ${TASK_REMINDER_MAX_ATTEMPTS} محاولات`,
-    `${lines}\n\nالعضو إما مغلق الرسائل الخاصة أو غادر السيرفر، فالتذكير أُوقف عند حدّه ولم يعد يُعاد. **تابعوا يدوياً** أو ألغوا المهمة.\n_محاولات кажд مهمة مسجّلة عليها، وفي \`/audit-log\` سطر \`task_reminder_given_up\`._`,
+    `${lines}\n\nالعضو إما مغلق الرسائل الخاصة أو غادر السيرفر، فالتذكير أُوقف عند حدّه ولم يعد يُعاد. **تابعوا يدوياً** أو ألغوا المهمة.\n_محاولات كل مهمة مسجّلة عليها، وفي \`/staff-logs\` سطر \`task_reminder_given_up\`._`,
     COLORS.warning)] });
 }
 
@@ -431,9 +431,57 @@ async function dailyReport(client) {
   await sendToChannel(client, 'performance-reports', { embeds: [e] });
 }
 
-async function weeklyReport(client) {
+/**
+ * من إجازته مفعّلة اليوم — قراءة واحدة للجدول بدل استعلام لكل عضو.
+ *
+ * مطابقة لـ `leaveService.activeForUser(id)` حرفياً: نفس الجدول، ونفس الشرطين
+ * (`status = 'approved'` وطرفا التاريخ يتقاطعان مع اليوم)، والاختلاف الوحيد
+ * أن الاستعلام لا يُقيَّد بمستخدم واحد — فنحصل على مجموعة من هم في إجازة الآن،
+ * وتُقرأ مرّتين هنا (قائمة المراجعة والخاملون) بدل 2N استعلاماً متفرّقة.
+ *
+ * @returns {Set<string>} معرّف كل من إجازته مفعّلة اليوم
+ */
+function activeLeaveUsers() {
+  const t = today();
+  const rows = getDb().prepare(`SELECT DISTINCT user_id FROM leave_requests
+    WHERE status = 'approved' AND start_date <= ? AND end_date >= ?`).all(t, t);
+  return new Set(rows.map(r => String(r.user_id)));
+}
+
+/**
+ * مرحلة بيانات التقرير الأسبوعي — المواد الخام تُقرأ **مرّتين مطلقاً** لا 14N:
+ *
+ * قبل التجميع كان المسار ثلاث قطوعات مستقلة فوق البيانات نفسها:
+ *  • قائمة المراجعة: `score.monthlyRaw(id, 7, 0)` لكل عضو — 7 عبارات × N.
+ *  • لوحتا الترتيب: `leaderboard()` بلا دفعة مشتركة — 9 × 2 (ولو كان مشتركاً
+ *    فهو9 ثابتة لا المشكلة الأصلية).
+ *  • رسائل الخاص: `individual()` بلا `pre` يسقط إلى `monthlyRaw` — 7N + N استعلام
+ *    إنذارات.
+ * أي 14N + استعلامات الإجازة (2N). الآن دفعتان فقط من `reports.rawBatch`:
+ * واحدة لنافذة القائمة (7 أيام) وأخرى لنافذة الترتيب والخاص، وثلاثة المستهلكين
+ * يقرأون منهما. `rawBatch` لا يقبل إزاحة، وكلا المستهلكين عند الإزاحة صفر،
+ * فالنافذة المحسوبة من اليوم مطابقة لـ `monthlyRaw(id, days, 0)` حقل بحقل
+ * (مثبت في tests/ackWindowFinish.test.js وtests/weeklyReportBatch.test.js).
+ *
+ * التصفية تبقى عند كل مستهلك كما كانت تماماً: القائمة تستبعد المستثنى
+ * (INACTIVE_STATUSES) والتجربة ومن هو في إجازة؛ اللوحتان عبر `isRankable`
+ * داخل `leaderboard`؛ والخاص لا يستبعد إلا المستقيل والمحذوف.
+ *
+ * @returns {{below: {user: string, rank: string, score: number}[],
+ *            boards: Record<string, object[]>,
+ *            dms: {user: string, report: object}[],
+ *            idle: object[],
+ *            windowDays: number}}
+ */
+function weeklyReportData() {
   const all = staffService.all();
-  const week = today();
+  const windowDays = reportCmds.LEADERBOARD_WINDOW_DAYS;
+  const ids = all.map(m => String(m.user_id));
+  const onLeave = activeLeaveUsers();
+
+  // نافذتان مختلفتان ⇒ دفعتان لا واحدة.
+  const weekBatch = reports.rawBatch(ids, 7);
+  const windowBatch = reports.rawBatch(ids, windowDays);
 
   // ===== قائمة المراجعة الأسبوعية =====
   // سياسة معلنة: لا خصم ولا مكافأة تلقائية. الأسبوع الضعيف يُراجع بشرياً
@@ -442,16 +490,40 @@ async function weeklyReport(client) {
   for (const m of all) {
     if (EXEMPT.includes(m.status)) continue;
     if (m.status === 'probation') continue; // عضو جديد لا يُعاقب قبل أن يبدأ
-    if (leaveService.activeForUser(m.user_id).length) continue;
-    const sc = score.compute(m, score.monthlyRaw(m.user_id, 7, 0)).score; // 7 days, no offset
+    if (onLeave.has(String(m.user_id))) continue;
+    const pre = weekBatch.get(String(m.user_id));
+    const sc = score.compute(m, pre ? pre.row : score.monthlyRaw(m.user_id, 7, 0)).score; // 7 days, no offset
     if (sc < 50) below.push({ user: m.user_id, rank: m.rank, score: sc });
   }
 
+  // ===== الترتيب — دفعة واحدة مشتركة للفريقين والرسائل =====
+  const boards = {};
+  for (const t of ['support', 'moderation']) {
+    boards[t] = reports.leaderboard(t, windowDays, { pre: windowBatch });
+  }
+
+  // ===== تقارير فردية بالخاص =====
+  const dms = [];
+  for (const m of all) {
+    if (m.status === 'resigned' || m.status === 'removed') continue;
+    dms.push({ user: m.user_id, report: reports.individual(m, windowDays, windowBatch.get(String(m.user_id))) });
+  }
+
+  // ===== الخاملون =====
+  const idle = all.filter(m => !EXEMPT.includes(m.status) && m.status !== 'probation'
+    && !onLeave.has(String(m.user_id)) && hoursSince(m.last_activity || m.joined_at) >= ABSENCE.idleDays * 24);
+
+  return { below, boards, dms, idle, windowDays };
+}
+
+async function weeklyReport(client) {
+  const week = today();
+  const { below, boards, dms, idle, windowDays } = weeklyReportData();
+
   // ===== الترتيب =====
-  const windowDays = reportCmds.LEADERBOARD_WINDOW_DAYS;
   const embeds = [embed(`📆 التقرير الأسبوعي — ${kit.tsDate(week)}`, `الترتيب على آخر **${windowDays}** يوماً (نافذة موحّدة لكل تقارير الترتيب).`, COLORS.primary)];
   for (const t of ['support', 'moderation']) {
-    const lb = reports.leaderboard(t, windowDays);
+    const lb = boards[t];
     // Points system removed — the weekly snapshot keeps score only.
     reports.save('weekly', `${week}:${t}`, lb.map(r => ({ user: r.staff.user_id, score: r.score })));
     embeds.push(reportCmds.leaderboardEmbed(lb, `🏆 ترتيب ${t === 'support' ? 'فريق الدعم الفني' : 'فريق الإشراف'} (آخر ${windowDays} يوم)`, windowDays));
@@ -483,13 +555,10 @@ async function weeklyReport(client) {
   }
 
   // ===== تقارير فردية بالخاص =====
-  for (const m of all) {
-    if (m.status === 'resigned' || m.status === 'removed') continue;
-    await dm(client, m.user_id, { embeds: [reportCmds.performanceEmbed(reports.individual(m, windowDays))] });
+  for (const d of dms) {
+    await dm(client, d.user, { embeds: [reportCmds.performanceEmbed(d.report)] });
   }
 
-  const idle = all.filter(m => !EXEMPT.includes(m.status) && m.status !== 'probation'
-    && !leaveService.activeForUser(m.user_id).length && hoursSince(m.last_activity || m.joined_at) >= ABSENCE.idleDays * 24);
   if (idle.length) await sendToChannel(client, 'staff-alerts', { embeds: [embed('💤 إداريون خاملون (7 أيام+)', idle.map(m => `<@${m.user_id}> — ${m.rank}`).join('\n'), COLORS.danger)] });
 }
 
@@ -708,7 +777,7 @@ function stop() {
 
 module.exports = {
   start, stop, status, bootstrap, checkAbsence, liftSuspensions, processLeaves,
-  processResignations, processTaskReminders, dailyReport, weeklyReport, monthlyReport,
+  processResignations, processTaskReminders, dailyReport, weeklyReport, weeklyReportData, monthlyReport,
   JOBS, JOB_TOGGLES, jobEnabled, clearRunningTasks,
   TASK_REMINDER_MAX_ATTEMPTS, reminderGiveUps, SCHEMA_FAULT_JOB,
 };
