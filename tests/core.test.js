@@ -48,7 +48,7 @@ function seedPromoMember(family, overrides = {}, id = `gate_${family}`) {
   openMemoryDb();
   const cfg = {
     status: 'active', activeDays: 28, rowsPerDay: 6,
-    actions: 60, responseSpeed: 25, warnings: 0, negativeNotes: 0,
+    actions: 60, seriousActions: null, responseSpeed: 25, warnings: 0, negativeNotes: 0,
     tickets: 50, duration: 4, ratingCount: 5, stars: 5,
     teamInteraction: 25, supervisorRating: 20, savedScore: null,
     ...PROMO_FAMILIES[family], ...overrides,
@@ -65,8 +65,13 @@ function seedPromoMember(family, overrides = {}, id = `gate_${family}`) {
   }
 
   if (cfg.team === 'moderation') {
-    const act = db.prepare(`INSERT INTO mod_actions (moderator_id, target_id, action_type, reason) VALUES (?, 'x', 'warn', 'r')`);
-    for (let k = 0; k < cfg.actions; k++) act.run(id);
+    // مزيج الأنواع داخل الإجمالي cfg.actions: حصّة جادّة (warn) والباقي
+    // روتين (delete). الافتراضي كله جادّ كما كان — بوابة الإجراءات تعدّ
+    // الإجمالي، وبوابة حل النزاعات الجادّة وحدها.
+    const act = db.prepare(`INSERT INTO mod_actions (moderator_id, target_id, action_type, reason) VALUES (?, 'x', ?, 'r')`);
+    const serious = cfg.seriousActions == null ? cfg.actions : cfg.seriousActions;
+    for (let k = 0; k < serious; k++) act.run(id, 'warn');
+    for (let k = serious; k < cfg.actions; k++) act.run(id, 'delete');
     db.prepare(`UPDATE staff_members SET response_speed = ? WHERE user_id = ?`).run(cfg.responseSpeed, id);
   } else {
     const tick = db.prepare(`INSERT INTO ticket_metrics (ticket_id, ticket_owner, claimer, closer, duration, logged_by) VALUES (?, ?, ?, ?, ?, 'log')`);
@@ -108,6 +113,11 @@ const PROMO_GATE_CASES = [
   { gate: 'تقييم العملاء', family: 'supExpert', bad: { stars: 3 } },
   { gate: 'تقييم المشرف', family: 'supHelper', bad: { supervisorRating: null } },
   { gate: 'الإجراءات المعالجة', family: 'modSenior', bad: { actions: 10 } },
+  // حل النزاعات: 60 إجراء روتيني (حذف) يجتاز بوابة الإجراءات وحدها،
+  // بينما الجادّ 2 فقط — تسقط النزاعات وحدها. والعكس: 3 جادّة تكفي النزاعات
+  // بينما الإجمالي 10 يسقط بوابة الإجراءات وحدها.
+  { gate: 'حل النزاعات', family: 'modSenior', bad: { actions: 60, seriousActions: 2 } },
+  { name: 'الإجراءات المعالجة مع سجل نزاعات كافٍ', gate: 'الإجراءات المعالجة', family: 'modSenior', bad: { actions: 10, seriousActions: 3 } },
   { gate: 'التواجد', family: 'modTrial', bad: { activeDays: 10, rowsPerDay: 17 } },
   { gate: 'الإنذارات الرسمية', family: 'modTrial', bad: { warnings: 1 } },
   { name: 'سرعة الاستجابة (تقييم المشرف)', gate: 'سرعة الاستجابة (تقييم المشرف)', family: 'modSenior', bad: { responseSpeed: 10 } },
@@ -205,11 +215,10 @@ describe('الترقيات', () => {
   // لكل بوابة: عضوٌ يجتز كل شروط الترقية الأخرى، ثم تُفسَد مادّة بوابة واحدة
   // فقط. لا يُقبل الفشل إلا بسقوط بوابة واحدة بالضبط وبإبطال الأهلية — وإلا
   // كانت البوابة زينة لا تُسقط الترقية إلا متى سقطت معها بقية الشروط.
-  // بوابتان خارج التغطية لأن promotions.js لا تُخرجهما أصلاً:
-  //  • «حل النزاعات»: السطر يقرأ rule.requireConflictResolution والثوابت تكتب
-  //    requiresConflictResolution — تطابق الاسم لا يحدث فالبوابة لا تظهر أبداً.
-  //  • «مساعدة عضو جديد»: الثابت requiresHelpedNewbee لا يقرؤه promotions.js.
-  //    عقد التغطية أسفله يفشل بصراحة إن صدرت بوابة جديدة بلا حالة فشل.
+  // عقد التغطية أسفله يرفض أي بوابة يُصدرها promotions.js بلا حالة فشل هنا،
+  // ولم يبقَ في الثوابت علمٌ لا يقرؤه أحد: «حل النزاعات» تُصدر الآن بعد
+  // إصلاح قارئها، وحُذف requiresHelpedNewbee لأن مصدره نقاطٌ أُزيلت من
+  // المشروع فلم يبقَ له إشارة تُقرأ.
   test('كل بوابة ترقية يمكن أن تفشل مستقلاً', async (t) => {
     for (const [i, spec] of PROMO_GATE_CASES.entries()) {
       await t.test(spec.name || spec.gate, () => {

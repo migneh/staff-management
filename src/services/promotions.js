@@ -33,6 +33,15 @@ function fastResponseLimits(team) {
   return override && typeof override === 'object' ? { ...base, ...override } : { ...base };
 }
 
+/**
+ * حدّ بوابة «حل النزاعات» (requiresConflictResolution في ثوابت الترقيات):
+ * عدّ الإجراءات الجادّة — warn/timeout/kick/ban في MOD_ACTION_TYPES — داخل
+ * نافذة الترقية، لا الكل. الروتين (حذف/فويس/اسم) لا يُثبت معالجة نزاع، فلا
+ * تكفي مئات الحذف وحدها؛ تسقط البوابة وحدها حين ينقص الجادّ عن هذا الحدّ،
+ * وعدد الإجراءات الكلي يبقى لبوابة «الإجراءات المعالجة» كما كان بلا تغيير.
+ */
+const CONFLICT_MIN_SERIOUS_ACTIONS = 3;
+
 function nextPromotion(staff) {
   const list = staff.team === 'support' ? SUPPORT_PROMOTIONS : MOD_PROMOTIONS;
   return list.find(p => p.from === staff.rank) || null;
@@ -176,9 +185,16 @@ function evaluate(staff) {
       ok('تقييم المشرف', rated, actual, `تقييم خلال ${RATING_VALID_DAYS} يوماً`);
     }
   } else {
-    const a = db.prepare(`SELECT COUNT(*) c FROM mod_actions WHERE moderator_id = ? AND created_at >= ?`).get(staff.user_id, sinceStamp);
+    // عدّادان في استعلام واحد: الكل لبوابة «الإجراءات المعالجة» (لم يتغير
+    // معناها)، والجادّ (warn/timeout/kick/ban) لبوابة «حل النزاعات» — فالحذف
+    // والفويس وتغيير الاسم روتينٌ لا يُثبت معالجة نزاع.
+    const a = db.prepare(`SELECT COUNT(*) c, COUNT(CASE WHEN action_type IN ('warn','timeout','kick','ban') THEN 1 END) serious
+      FROM mod_actions WHERE moderator_id = ? AND created_at >= ?`).get(staff.user_id, sinceStamp);
     ok(`الإجراءات المعالجة (${windowLabel(windowDays)})`, a.c >= rule.actions, `${a.c}`, `${rule.actions}+`);
-    if (rule.requireConflictResolution) ok('حل النزاعات', a.c >= 5, `${a.c} إجراء`, 'سجل إجراءات كافٍ');
+    if (rule.requiresConflictResolution) {
+      ok(`حل النزاعات (${windowLabel(windowDays)})`, a.serious >= CONFLICT_MIN_SERIOUS_ACTIONS,
+        `${a.serious} إجراء جاد`, `${CONFLICT_MIN_SERIOUS_ACTIONS}+`);
+    }
   }
 
   if (rule.minActiveDays) {

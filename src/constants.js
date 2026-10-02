@@ -208,39 +208,39 @@ const RECOGNITION = {
 // warnWindowDays: نافذة احتساب الإنذارات الرسمية
 // stableMonths/stableMinScore: «أداء مستقر» عبر تقارير شهرية محفوظة
 // maxWrongDecisions: أقصى عدد قرارات خاطئة مسجّلة في النافذة
-// requiresHelpedNewbie: يشترط وجود نقاط مساعدة عضو جديد في النافذة
 // requiresSupervisorRating: يشترط تقييم مشرف حديث (خلال 90 يوم)
-// requiresConflictResolution: يشترط حل نزاعات
+// requiresConflictResolution: يشترط 3 إجراءات جادّة (تحذير/تايم أوت/كيك/بان)
+//   داخل النافذة — الإجراء الروتيني (حذف/فويس/اسم) لا يُحسب لها
 
 const SUPPORT_PROMOTIONS = [
     {
       from: 'Helper', to: 'Support', months: 2, score: 65, rating: 3.5,
      maxWarnings: 0, windowDays: 180, warnWindowDays: 180,
-     minActiveDays: 15, minMessages: null, requiresSupervisorRating: true, requiresHelpedNewbee: false,
+     minActiveDays: 15, minMessages: null, requiresSupervisorRating: true,
      approvers: 'مشرف واحد', approvals: 1, approvalLevel: LEVELS.SUPERVISOR,
    },
    {
      from: 'Support', to: 'Support Expert', months: 3, score: 70, rating: 4.0,
      maxWarnings: 1, windowDays: 180, warnWindowDays: 180,
-     minActiveDays: 20, minMessages: 100, requiresHelpedNewbee: false, fastResponseRequired: true,
+     minActiveDays: 20, minMessages: 100, fastResponseRequired: true,
      approvers: 'مشرف + مكتب الدعم', approvals: 2, approvalLevel: LEVELS.MANAGEMENT,
    },
    {
      from: 'Support Expert', to: 'Support Analyst', months: 4, score: 75, rating: 4.2,
      maxWarnings: 0, windowDays: 180, warnWindowDays: 180,
-     minActiveDays: 20, minMessages: 150, requiresHelpedNewbee: true, fastResponseRequired: true,
+     minActiveDays: 20, minMessages: 150, fastResponseRequired: true,
      approvers: 'مكتب الدعم + Boss', approvals: 2, approvalLevel: LEVELS.MANAGEMENT,
    },
    {
      from: 'Support Analyst', to: 'Supervisor Manager', months: 6, score: 80, rating: 4.5,
      maxWarnings: 0, windowDays: 180, warnWindowDays: 180,
-     minActiveDays: 20, minMessages: null, stableMonths: 1, stableMinScore: 65, requiresHelpedNewbee: false, fastResponseRequired: true,
+     minActiveDays: 20, minMessages: null, stableMonths: 1, stableMinScore: 65, fastResponseRequired: true,
      approvers: 'مكتب الدعم + Boss', approvals: 2, approvalLevel: LEVELS.MANAGEMENT,
    },
    {
      from: 'Supervisor Manager', to: 'Support Office', months: 8, score: 85, rating: 4.7,
      maxWarnings: 0, windowDays: 180, warnWindowDays: 180,
-     minActiveDays: 20, minMessages: null, stableMonths: 2, stableMinScore: 75, requiresHelpedNewbee: false, fastResponseRequired: true,
+     minActiveDays: 20, minMessages: null, stableMonths: 2, stableMinScore: 75, fastResponseRequired: true,
      approvers: 'Boss فقط', approvals: 1, approvalLevel: LEVELS.BOSS,
    },
  ];
