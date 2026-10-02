@@ -50,10 +50,18 @@ function clipRich(value, max) {
     const i = out.lastIndexOf('`');
     if (i !== -1) out = out.slice(0, i);
   }
-  // 4) علامة تشكيل/تطويل معلّقة في آخر النص: نتراجع للخلف حتى آخر محرف غير مُعلِّم.
-  while (out.length > 0 && ARABIC_DIACRITIC.test(out[out.length - 1])) out = out.slice(0, -1);
-  // مسافة/سطر قبل علامة الحذف يبدو مكسوراً — ننظّفه.
-  out = out.replace(/[\s-]+$/u, '');
+  // 4) علامة تشكيل/تطويل معلّقة في آخر النص، مع مسافة/سطر ذيل يبدو مكسوراً.
+  //    الترتيب مقصود ولا يُعكس: نقول «تنظيف الذيل» ثم «فحص التشكيل» في كل
+  //    دورة. لو فُحص التشكيل أولاً ثم نُظِّف الذيل، فإن مسافة الذيل كانت
+  //    تحجب العلامة عن الفحص، فكشفها التنظيفُ بعدها وبقيت «قُرْآنٌ» منتهيةً
+  //    بتطويل معلّق فوق حرف مقطوع. سقف الدورتين ينهي أي حلقة، وكل دورة تُنقص
+  //    الطول محرفاً واحداً على الأقل.
+  for (let guard = 0; guard < 2; guard++) {
+    const before = out.length;
+    out = out.replace(/[\s-]+$/u, '');
+    while (out.length > 0 && ARABIC_DIACRITIC.test(out[out.length - 1])) out = out.slice(0, -1);
+    if (out.length === before) break;
+  }
   if (!out) return ELLIPSIS.slice(0, limit);
   return out.length + 1 > limit ? `${out.slice(0, Math.max(0, limit - 1))}${ELLIPSIS}` : `${out}${ELLIPSIS}`;
 }

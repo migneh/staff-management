@@ -318,22 +318,47 @@ module.exports = {
         .addStringOption(o => o.setName('team').setDescription('الفريق').addChoices({ name: 'فريق الدعم الفني', value: 'support' }, { name: 'فريق الإشراف', value: 'moderation' })),
       level: LEVELS.SUPERVISOR,
       async execute(i) {
+        // deferReply يؤجّل **الردّ** لا **تنفيذ الكود** — reports.team متزامن
+        // وبلا await، فيبقى حلقة الأحداث محجوبة أثناء بناء كل فريق. نبضة
+        // واحدة بين الفريقين تمنح البوابة فرصة لتلتقط حدثاً آخر.
+        const yieldTick = () => new Promise(resolve => { setTimeout(resolve, 0); });
         await i.deferReply({ ephemeral: true });
         const team = i.options.getString('team');
         const teams = team ? [team] : ['support', 'moderation'];
-        return i.editReply({ embeds: teams.map(t => teamEmbed(t, reports.team(t))) });
-},
+        const embeds = [];
+        for (const t of teams) {
+          // reports.team يقرأ المواد الخام مرة واحدة لكل فريق (7 عبارات بدل 7N).
+          embeds.push(teamEmbed(t, reports.team(t)));
+          await yieldTick();
+        }
+        return i.editReply({ embeds });
+      },
      },
      {
        data: new SlashCommandBuilder().setName('leaderboard').setDescription('ترتيب الإداريين (للإدارة فقط)')
          .addStringOption(o => o.setName('team').setDescription('الفريق').addChoices({ name: 'فريق الدعم الفني', value: 'support' }, { name: 'فريق الإشراف', value: 'moderation' }, { name: 'عام', value: 'all' })),
        level: LEVELS.SUPERVISOR,
-       async execute(i) {
-         await i.deferReply({ ephemeral: true });
-         const team = i.options.getString('team') || 'all';
-         if (team === 'all') return i.editReply({ embeds: [leaderboardEmbed(reports.leaderboard('support', LEADERBOARD_WINDOW_DAYS), '🏆 ترتيب فريق الدعم الفني'), leaderboardEmbed(reports.leaderboard('moderation', LEADERBOARD_WINDOW_DAYS), '🏆 ترتيب فريق الإشراف')] });
-         return i.editReply({ embeds: [leaderboardEmbed(reports.leaderboard(team, LEADERBOARD_WINDOW_DAYS), `🏆 ترتيب ${TEAMS[team]}`)] });
-       },
+        async execute(i) {
+          // deferReply يؤجّل **الردّ** لا **تنفيذ الكود**: البناء كله متزامن بلا
+          // await، فيبقى حلقة الأحداث محجوبة طواله فلا تستقبل البوابة حدثاً آخر.
+          // نمدّدها بأنفسنا بنبضة واحدة بعد بناء كل فريق.
+          const yieldTick = () => new Promise(resolve => { setTimeout(resolve, 0); });
+          await i.deferReply({ ephemeral: true });
+          const team = i.options.getString('team') || 'all';
+          if (team === 'all') {
+            // leaderboardsAll يقرأ المواد الخام مرة واحدة للفريقين معاً:
+            // 7 عبارات GROUP BY بدل 7N استعلام لكل فريق على حدة.
+            const boards = reports.leaderboardsAll(['support', 'moderation'], LEADERBOARD_WINDOW_DAYS);
+            await yieldTick();
+            return i.editReply({ embeds: [
+              leaderboardEmbed(boards.support, '🏆 ترتيب فريق الدعم الفني'),
+              leaderboardEmbed(boards.moderation, '🏆 ترتيب فريق الإشراف'),
+            ] });
+          }
+          const rows = reports.leaderboard(team, LEADERBOARD_WINDOW_DAYS);
+          await yieldTick();
+          return i.editReply({ embeds: [leaderboardEmbed(rows, `🏆 ترتيب ${TEAMS[team]}`)] });
+        },
      },
       {
         data: new SlashCommandBuilder().setName('score-weights')
@@ -343,7 +368,7 @@ module.exports = {
               { name: 'عرض الأوزان الحالية', value: 'view' },
               { name: 'تعيين أوزان فريق', value: 'set' }
             ))
-          .addStringOption(o => o.setName('team').setDescription('الفريق (required for set action)')
+          .addStringOption(o => o.setName('team').setDescription('الفريق — مطلوب في إجراء التعيين فقط')
             .addChoices(
               { name: 'Helper', value: 'helper' },
               { name: 'Support', value: 'support' },
