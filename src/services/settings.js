@@ -103,12 +103,12 @@ function setTicketLogBotId(botId) { set('ticketLogBotId', botId || null); }
 const FEATURE_TOGGLES_DEFAULTS = Object.freeze({
    weeklyReports: true,           // يُقرأ في: src/scheduler.js (المهمة weekly-report)
    monthlyReports: true,          // يُقرأ في: src/scheduler.js (المهمة monthly-report)
-   activityTracking: true,        // ⚠️ لا قارئ بعد — الكتابة في src/services/activity.js غير مربوطة بالمفتاح
+   activityTracking: true,        // يُقرأ في: src/services/activity.js (البوابة الوحيدة لكتابة activity_logs)
    punishmentSystem: true,        // يُقرأ في: src/commands/punishments.js (/warn, /note)
    detailedSystemStatus: true,    // يُقرأ في: src/commands/system.js (الوضع التفصيلي)
    promotionProgress: true,       // يُقرأ في: src/commands/promotion-progress.js
    myStatusCommand: true,         // يُقرأ في: src/commands/my-status.js
-   auditExport: true,             // يُقرأ في: src/commands/audit.js و staff-logs.js
+   auditExport: true,             // يُقرأ في: src/commands/staff-logs.js
    autoBackups: true,             // يُقرأ في: src/scheduler.js (المهمة backup)
 });
 

@@ -19,7 +19,7 @@ const kit = require('../ui/kit');
 const FEATURES = [
   { key: 'weeklyReports', label: 'تقارير أسبوعية تلقائية', group: 'reports', hint: 'يُوقف التقرير الأسبوعي المجدول' },
   { key: 'monthlyReports', label: 'تقارير شهرية تلقائية', group: 'reports', hint: 'يُوقف التقرير الشهري المجدول' },
-  { key: 'activityTracking', label: 'تتبع النشاط', group: 'tracking', hint: '⚠️ غير مربوط: إيقافه لا يوقف تسجيل النشاط بعد' },
+  { key: 'activityTracking', label: 'تتبع النشاط', group: 'tracking', hint: 'يوقف تسجيل النشاط الجديد فقط — ما سُجّل سابقاً يبقى مقروءاً، ونوافذ Score والترقية تنقص تدريجياً' },
   { key: 'punishmentSystem', label: 'نظام العقوبات', group: 'system', hint: 'يُوقف /warn و /note' },
   { key: 'detailedSystemStatus', label: 'حالة النظام التفصيلية', group: 'system', hint: 'يُوقف الوضع التفصيلي في /system-status' },
   { key: 'promotionProgress', label: 'أمر تقدم الترقية', group: 'commands', hint: 'يُوقف أمر تقدم الترقية' },

@@ -303,55 +303,6 @@ function recordTeamMissionProgress(db, task, userId, stamp) {
     .run(task.parent_task_id, task.team_id, userId, stamp);
 }
 
-/**
- * معالجة المهام المتكررة (يجب تشغيلها يومياً من المجدول)
- */
-function processRecurringTasks() {
-  const db = getDb();
-  const todayDate = today();
-  
-  // البحث عن المهام المتكررة التي تحتاج للتكرار اليوم
-  const recurringTasks = db.prepare(`
-    SELECT * FROM staff_tasks 
-    WHERE task_type = 'recurring' 
-      AND status = 'completed'
-      AND due_date <= ?
-  `).all(todayDate);
-  
-  const created = [];
-  for (const task of recurringTasks) {
-    try {
-      const tags = JSON.parse(task.tags || '{}');
-      const recurrence = tags.recurrence;
-      
-      let nextDate = null;
-      if (recurrence === 'daily') {
-        nextDate = addDays(task.due_date, 1);
-      } else if (recurrence === 'weekly') {
-        nextDate = addDays(task.due_date, 7);
-      } else if (recurrence === 'monthly') {
-        nextDate = addDays(task.due_date, 30); // تقريبي
-      }
-      
-      if (nextDate && nextDate >= todayDate) {
-        const newTask = createRecurring(
-          task.user_id,
-          task.title,
-          task.description,
-          recurrence,
-          nextDate,
-          task.assigned_by
-        );
-        if (newTask) created.push(newTask);
-      }
-    } catch (e) {
-      console.error(`خطأ في معالجة المهمة المتكررة ${task.id}:`, e);
-    }
-  }
-  
-  return created;
-}
-
 function approveOnboarding(userId, approvedBy) {
   const db = getDb();
   const target = db.prepare("SELECT * FROM staff_members WHERE user_id = ? AND status = 'probation'").get(userId);
@@ -433,7 +384,6 @@ module.exports = {
   cancel,
   createFromTemplate,
   createRecurring,
-  processRecurringTasks,
   createTeamMission,
   completeTeamMission,
   assignMentor,

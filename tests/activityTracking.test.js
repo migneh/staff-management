@@ -142,11 +142,11 @@ describe('no dead switch: the key has a reader', () => {
       'the gate runs after the row is written');
   });
 
-  // NOTE: src/commands/config.js is outside this change's edit scope, so its
-  // hint for this key still reads "⚠️ غير مربوط: إيقافه لا يوقف تسجيل النشاط
-  // بعد" — which is now FALSE. Fixing that one Arabic string in config.js:22
-  // is a required follow-up by whoever owns that file. The behaviour is
-  // pinned here instead, so the toggle cannot silently become a no-op again.
+  // NOTE: the config.js:22 hint follow-up has landed — /config now describes
+  // the real effect of disabling the toggle (new rows stop; previously
+  // recorded rows stay readable; Score/promotion windows degrade over time).
+  // This suite still pins the behaviour, not the wording, so the toggle
+  // cannot silently become a no-op again.
 });
 
 describe('the member sees that their record is incomplete', () => {
