@@ -6,7 +6,7 @@ require('./sqlite-compat').install();
 
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { spawnSync } = require('child_process');
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
 const { openMemoryDb } = require('../src/database');
@@ -87,12 +87,14 @@ describe('عقود المشروع', () => {
     });
 
     test('جدول README مطابق تماماً للمولّد (الوصف والصلاحية أيضاً)', () => {
-      // نعيد استعمال منطق scripts/gen-readme-commands.js نفسه بدل إعادة
-      // كتابته: هو مصدر الحقيقة الوحيد، و--check هو حكمه.
-      execFileSync(process.execPath, [path.join(ROOT, 'scripts', 'gen-readme-commands.js'), '--check'], {
-        cwd: ROOT,
-        stdio: 'pipe',
+      // مصدر واحد للحقيقة: نفس أمر --check الذي يشغّله CI. توحيد السطور
+      // (CRLF مقابل LF) مُجرى داخل السكربت نفسه، فالنتيجة لا تختلف باختلاف
+      // core.autocrlf عند المطوّر ولا باختلاف سطر نهاية المحرار.
+      const res = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'gen-readme-commands.js'), '--check'], {
+        cwd: ROOT, encoding: 'utf8',
       });
+      assert.equal(res.status, 0,
+        `جدول README لا يطابق المولّد — شغّل npm run docs:commands\n${res.stderr || res.stdout || ''}`);
     });
   });
 });

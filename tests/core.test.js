@@ -10,6 +10,7 @@ const score = require('../src/services/score');
 const promo = require('../src/services/promotions');
 const faq = require('../src/services/faq');
 const reports = require('../src/services/reports');
+const clock = require('../src/clock');
 const { resolveComponent } = require('../src/commands');
 
 function seedStaff(id, team, rank, extra = {}) {
@@ -18,6 +19,103 @@ function seedStaff(id, team, rank, extra = {}) {
     .run(id, 'u' + id, team, rank, extra.status || 'active', extra.since || '2025-01-01 00:00:00', extra.since || '2025-01-01 00:00:00', extra.last || '2026-09-12 00:00:00');
   return db.prepare('SELECT * FROM staff_members WHERE user_id = ?').get(id);
 }
+
+// ===== أدوات بوابات الترقية =====
+// كل حالة تُزرع في قاعدة بيانات جديدة (openMemoryDb) بتواريخ محسوبة من اليوم
+// فلا تتقادم البيانات ولا تتداخل حالتان في صفوف بعضهما أبداً.
+
+/** عائلات الترقيات: كل بوابة تُختبر داخل الرتبة التي تُفعّلها فعلاً */
+const PROMO_FAMILIES = {
+  // إشراف: الإجراءات المعالجة، القرارات الخاطئة، سرعة «تقييم المشرف»، الأداء المستقر
+  modTrial: { team: 'moderation', rank: 'Trial Moderator', sinceDays: 60 },
+  modSenior: { team: 'moderation', rank: 'Moderator', sinceDays: 120 },
+  modAdmin: { team: 'moderation', rank: 'Admin', sinceDays: 210, actions: 65, savedScore: 80 },
+  // دعم: الرسائل، تقييم العملاء، سرعة «متوسط التكتات»، تقييم المشرف
+  supExpert: { team: 'support', rank: 'Support', sinceDays: 120 },
+  supHelper: { team: 'support', rank: 'Helper', sinceDays: 90 },
+};
+
+/**
+ * يزرع عضواً ومادّة شروط ترقيته كاملة — القيم الافتراضية تجتز كل بوابات عائلته.
+ * النشاط يُكتب بعمود day داخل نافذة الـScore وcreated_at افتراضي «الآن» داخل
+ * نافذة البوابة، فيقرأه الطرفان معاً بلا إزاحة توقيت.
+ * @param {string} family مفتاح PROMO_FAMILIES
+ * @param {object} overrides مادّة بوابة واحدة مفسودة (أو `{}` لحالة الصحة)
+ * @param {string} id معرّف فريد داخل قاعدتها الجديدة
+ * @returns {object} صف staff_members بعد كل التعديلات
+ */
+function seedPromoMember(family, overrides = {}, id = `gate_${family}`) {
+  openMemoryDb();
+  const cfg = {
+    status: 'active', activeDays: 28, rowsPerDay: 6,
+    actions: 60, responseSpeed: 25, warnings: 0, negativeNotes: 0,
+    tickets: 50, duration: 4, ratingCount: 5, stars: 5,
+    teamInteraction: 25, supervisorRating: 20, savedScore: null,
+    ...PROMO_FAMILIES[family], ...overrides,
+  };
+  const db = getDb();
+  const since = clock.addDays(clock.today(), -cfg.sinceDays);
+  db.prepare(`INSERT INTO staff_members (user_id, username, team, rank, status, joined_at, rank_since) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, id, cfg.team, cfg.rank, cfg.status, since, since);
+
+  const activity = db.prepare(`INSERT INTO activity_logs (user_id, channel_id, channel_type, weight, day) VALUES (?, '1', 'staff', 0.25, ?)`);
+  for (let d = 0; d < cfg.activeDays; d++) {
+    const day = clock.addDays(clock.today(), -d);
+    for (let k = 0; k < cfg.rowsPerDay; k++) activity.run(id, day);
+  }
+
+  if (cfg.team === 'moderation') {
+    const act = db.prepare(`INSERT INTO mod_actions (moderator_id, target_id, action_type, reason) VALUES (?, 'x', 'warn', 'r')`);
+    for (let k = 0; k < cfg.actions; k++) act.run(id);
+    db.prepare(`UPDATE staff_members SET response_speed = ? WHERE user_id = ?`).run(cfg.responseSpeed, id);
+  } else {
+    const tick = db.prepare(`INSERT INTO ticket_metrics (ticket_id, ticket_owner, claimer, closer, duration, logged_by) VALUES (?, ?, ?, ?, ?, 'log')`);
+    for (let k = 0; k < cfg.tickets; k++) tick.run(`${id}_t${k}`, id, id, id, cfg.duration);
+    const ratedAt = `${clock.today()} 12:00:00`;
+    const rating = db.prepare(`INSERT INTO support_ratings (staff_id, reviewer_id, stars, rated_at, source_message_id, source_channel_id, source_guild_id, source_bot_id) VALUES (?, 'rev', ?, ?, ?, 'c', 'g', 'b')`);
+    for (let k = 0; k < cfg.ratingCount; k++) rating.run(id, cfg.stars, ratedAt, `${id}_r${k}`);
+    if (family === 'supHelper') {
+      db.prepare(`UPDATE staff_members SET team_interaction = ?, supervisor_rating = ? WHERE user_id = ?`)
+        .run(cfg.teamInteraction, cfg.supervisorRating, id);
+    }
+  }
+
+  const warn = db.prepare(`INSERT INTO warnings (user_id, warning_type, reason, issued_by) VALUES (?, 'first', 'r', 'b')`);
+  for (let k = 0; k < cfg.warnings; k++) warn.run(id);
+  const note = db.prepare(`INSERT INTO staff_notes (user_id, note_type, content, added_by) VALUES (?, 'negative', 'قرار خاطئ', 'mgr')`);
+  for (let k = 0; k < cfg.negativeNotes; k++) note.run(id);
+
+  if (cfg.savedScore != null) {
+    const period = `${clock.today().slice(0, 7)}:${cfg.team}`;
+    db.prepare(`INSERT INTO saved_reports (report_type, period, data) VALUES ('monthly', ?, ?)`)
+      .run(period, JSON.stringify({ members: [{ user: id, score: cfg.savedScore, rank: cfg.rank }] }));
+  }
+
+  return db.prepare('SELECT * FROM staff_members WHERE user_id = ?').get(id);
+}
+
+/** يوحّد لاحقة النافذة «(30 يوم)» — تسمية البوابة نفسها لا رقم نافذتها */
+const stripWindow = label => label.replace(/\s*\(\d[^)]*\)\s*$/, '');
+
+/** يطابق تسمية بوابة داخل مصفوفة checks مع مواصفة الحالة (مع استثناء نص إن وُجد) */
+const matchGate = (label, spec) => label.includes(spec.gate) && (!spec.gateNot || !label.includes(spec.gateNot));
+
+/** حالات الفشل المستقلة: كل حالة تُفسد مادّة بوابة واحدة فقط */
+const PROMO_GATE_CASES = [
+  { gate: 'مدة الخدمة بالرتبة', family: 'modTrial', bad: { sinceDays: 10 } },
+  { gate: 'تقييم الأداء Score', family: 'modTrial', bad: { actions: 20, activeDays: 18, responseSpeed: 1 } },
+  { gate: 'الرسائل', family: 'supExpert', bad: { rowsPerDay: 2 } },
+  { gate: 'تقييم العملاء', family: 'supExpert', bad: { stars: 3 } },
+  { gate: 'تقييم المشرف', family: 'supHelper', bad: { supervisorRating: null } },
+  { gate: 'الإجراءات المعالجة', family: 'modSenior', bad: { actions: 10 } },
+  { gate: 'التواجد', family: 'modTrial', bad: { activeDays: 10, rowsPerDay: 17 } },
+  { gate: 'الإنذارات الرسمية', family: 'modTrial', bad: { warnings: 1 } },
+  { name: 'سرعة الاستجابة (تقييم المشرف)', gate: 'سرعة الاستجابة (تقييم المشرف)', family: 'modSenior', bad: { responseSpeed: 10 } },
+  { name: 'سرعة الاستجابة (متوسط التكتات)', gate: 'سرعة الاستجابة', gateNot: 'تقييم المشرف', family: 'supExpert', bad: { duration: 120 } },
+  { gate: 'القرارات الخاطئة', family: 'modTrial', bad: { negativeNotes: 1 } },
+  { gate: 'الأداء المستقر', family: 'modAdmin', bad: { savedScore: 50 } },
+  { gate: 'الحالة', family: 'modTrial', bad: { status: 'on_leave' } },
+];
 
 beforeEach(() => openMemoryDb());
 
@@ -101,6 +199,49 @@ describe('الترقيات', () => {
   test('Boss لا يملك ترقية', () => {
     const s = seedStaff('b1', 'support', 'Boss');
     assert.equal(promo.evaluate(s).rule, null);
+  });
+
+  // ===== كل بوابة ترقية تفشل وحدها =====
+  // لكل بوابة: عضوٌ يجتز كل شروط الترقية الأخرى، ثم تُفسَد مادّة بوابة واحدة
+  // فقط. لا يُقبل الفشل إلا بسقوط بوابة واحدة بالضبط وبإبطال الأهلية — وإلا
+  // كانت البوابة زينة لا تُسقط الترقية إلا متى سقطت معها بقية الشروط.
+  // بوابتان خارج التغطية لأن promotions.js لا تُخرجهما أصلاً:
+  //  • «حل النزاعات»: السطر يقرأ rule.requireConflictResolution والثوابت تكتب
+  //    requiresConflictResolution — تطابق الاسم لا يحدث فالبوابة لا تظهر أبداً.
+  //  • «مساعدة عضو جديد»: الثابت requiresHelpedNewbee لا يقرؤه promotions.js.
+  //    عقد التغطية أسفله يفشل بصراحة إن صدرت بوابة جديدة بلا حالة فشل.
+  test('كل بوابة ترقية يمكن أن تفشل مستقلاً', async (t) => {
+    for (const [i, spec] of PROMO_GATE_CASES.entries()) {
+      await t.test(spec.name || spec.gate, () => {
+        const show = checks => checks.map(c => `${c.pass ? '✔' : '✘'} ${c.label} — ${c.actual} / المطلوب ${c.required}`).join('\n');
+        // الحالة الصحية أولاً: لو لم يجتز الأساس كل البوابات فهو ليس أساساً
+        const good = promo.evaluate(seedPromoMember(spec.family, spec.good || {}, `gate_ok_${i}`));
+        assert.equal(good.eligible, true, `الأساس الصحيح يجب أن يجتز كل البوابات:\n${show(good.checks)}`);
+        const goodGate = good.checks.find(c => matchGate(c.label, spec));
+        assert.ok(goodGate && goodGate.pass, `البوابة «${spec.gate}» يجب أن تنجح في الأساس الصحيح`);
+
+        // ثم مادّة البوابة وحدها مفسودة: تسقط هي وحدها وتُبطل الأهلية
+        const bad = promo.evaluate(seedPromoMember(spec.family, spec.bad, `gate_bad_${i}`));
+        assert.equal(bad.eligible, false, `الملف المفسود لا يجوز أن يكون مؤهلاً:\n${show(bad.checks)}`);
+        const gate = bad.checks.find(c => matchGate(c.label, spec));
+        assert.ok(gate, `البوابة «${spec.gate}» غير مضافة في checks:\n${show(bad.checks)}`);
+        const failing = bad.checks.filter(c => !c.pass);
+        assert.equal(failing.length, 1, `يجب أن تسقط بوابة واحدة فقط — سقطت ${failing.length}:\n${failing.map(c => `${c.label} (${c.actual} / ${c.required})`).join('\n')}`);
+        assert.ok(matchGate(failing[0].label, spec), `البوابة الفاشلة «${failing[0].label}» ليست «${spec.gate}»`);
+      });
+    }
+
+    // عقد التغطية: كل بوابة يُصدرها promotions.js يجب أن تملك حالة فشل مستقلة
+    await t.test('كل بوابة يُصدرها promotions.js لها حالة فشل مستقلة', () => {
+      const seen = new Set();
+      for (const family of Object.keys(PROMO_FAMILIES)) {
+        const ev = promo.evaluate(seedPromoMember(family, {}, `gate_cov_${family}`));
+        for (const c of ev.checks) seen.add(stripWindow(c.label));
+      }
+      const covered = new Set(PROMO_GATE_CASES.map(c => stripWindow(c.gate)));
+      assert.deepEqual([...covered].sort(), [...seen].sort(),
+        'البوابات المغطاة تختلف عن البوابات الفعلية — أضِف حالة فشل أو صحّح التسمية');
+    });
   });
 });
 

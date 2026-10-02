@@ -44,11 +44,15 @@ const table = [
 const readmePath = path.join(root, 'README.md');
 const readme = fs.readFileSync(readmePath, 'utf8');
 const hasMarkers = readme.includes(START) && readme.includes(END);
+const norm = s => s.replace(/\r\n/g, '\n');
 const next = hasMarkers
-  ? readme.replace(new RegExp(`${START}[\\s\\S]*?${END}`), table)
-  : `${readme.replace(/\n## ⏰ المهام التلقائية/, `\n${table}\n\n## ⏰ المهام التلقائية`)}`;
+  ? norm(readme).replace(new RegExp(`${START}[\\s\\S]*?${END}`), table)
+  : `${norm(readme).replace(/\n## ⏰ المهام التلقائية/, `\n${table}\n\n## ⏰ المهام التلقائية`)}`;
 
-if (next === readme) {
+// المقارنة بعد توحيد السطور: سطر نهاية واحد (CRLF في نسخة المطوّر بسبب
+// core.autocrlf) ليس فرقاً في المضمون، فلا يُسقط --check جدولاً صحيحاً
+// بسبب سطر نهاية وحده.
+if (norm(next) === norm(readme)) {
   console.log('✅ جدول الأوامر في README محدّث بالفعل.');
   process.exit(0);
 }
