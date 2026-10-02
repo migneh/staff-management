@@ -332,16 +332,16 @@ describe('القصّ الواعي بالرموز: مسابقات عربية حق
   // يكتبه محرّر غير محترف فتتغير الكلمة، ونحصل حينها على اختبار يمرّ على كود
   // مكسور لأن القالب لم يعد يطابق شيئاً.
   const A = (...cps) => String.fromCodePoint(...cps);
-  const BACK = A(0x644, 0x644, 0x631, 0x62C, 0x648, 0x639);          // للرجوع (الصحيح)
+  const DAYS = A(0x627, 0x644, 0x623, 0x64A, 0x627, 0x645);            // الأيام (الصيغة الصحيحة)
   const TYPO = A(0x644, 0x644, 0x623, 0x631, 0x62C, 0x627, 0x639);    // للأرجاع (خطأ)
   const WRONG_LATIN = '(required for set action)';
   const SET_ONLY = A(0x627, 0x644, 0x62A, 0x639, 0x64A, 0x64A, 0x646); // التعيين
 
   test('i18n: أوصاف الخيارات بلا لاتيني دخيل ولا خطأ إملائي', () => {
     // الخيارات تظهر 100% للمستخدم في منتقي أوامر ديسكورد، فلا تساويها
-    // «تعليق داخلي». الخياران المعالَجان: audit-export وscore-weights.
+    // «تعليق داخلي». الخياران المعالَجان: staff-logs (بقي بعد دمج audit) وscore-weights.
     const cases = [
-      ['audit-export', require('../src/commands/audit').commands, 'days'],
+      ['staff-logs', require('../src/commands/staff-logs').commands, 'days'],
       ['score-weights', require('../src/commands/reports').commands, 'team'],
     ];
     const ARABIC = /[\u0600-\u06FF]/;
@@ -356,8 +356,8 @@ describe('القصّ الواعي بالرموز: مسابقات عربية حق
       assert.deepEqual(words, [], `${name}.${option}: Latin leaked in — ${words.join(',')} in ${d}`);
       assert.ok(!d.includes(WRONG_LATIN), `${name}.${option}: the English placeholder survived — ${d}`);
       assert.ok(!d.includes(TYPO), `${name}.${option}: the misspelling survived — ${d}`);
-      // موجب لا سلبي: نقول ما يجب أن يكون. «للرجوع» هي الصيغة الصحيحة.
-      if (name === 'audit-export') assert.ok(d.includes(BACK), `${name}.${option}: missing the correct wording — ${d}`);
+      // موجب لا سلبي: نقول ما يجب أن يكون. «الأيام» هي الصيغة الصحيحة.
+      if (name === 'staff-logs') assert.ok(d.includes(DAYS), `${name}.${option}: missing the correct wording — ${d}`);
       if (name === 'score-weights') assert.ok(d.includes(SET_ONLY), `${name}.${option}: missing the correct wording — ${d}`);
     }
   });

@@ -200,6 +200,9 @@ function scrub(val) {
     .replace(/`[^`]*`/g, '')
     .replace(/\/?#?\d[\d-]*/g, '')
     .replace(/\s*\/\S+/g, '')
+    // معرّفات أسلوب_الsnake_case (مثل staff_warning_issued في وصف خيار action)
+    // معرّفات تقنية معروضة كمثال، لا نص إنجليزي مسرّب.
+    .replace(/\b[a-z]+(?:_[a-z]+)+\b/g, '')
     .replace(/YYYY-MM-DD/g, '')
     .replace(/[A-Z][A-Z0-9_]{2,}/g, '');
 }
@@ -211,7 +214,7 @@ describe('لا لاتيني/فرنسي دخيل في النصوص الظاهرة
     'src/utils.js',
     'src/ui/kit.js',
     'src/commands/records.js',
-    'src/commands/audit.js',
+    'src/commands/staff-logs.js',
     'src/commands/my-status.js',
     'src/commands/logging.js',
     'src/commands/leaves.js',
@@ -232,16 +235,23 @@ describe('لا لاتيني/فرنسي دخيل في النصوص الظاهرة
     assert.deepEqual(offences, [], `نصوص ظاهرة بلاتيني/فرنسي:\n${offences.join('\n')}`);
   });
 
-  test('أوصاف خيارات audit-export عربية بالكامل', () => {
-    const audit = require('../src/commands/audit');
-    const cmd = audit.commands.find(c => c.data.name === 'audit-export');
-    const descs = cmd.data.options.map(o => o.description);
-    for (const d of descs) {
-      assert.ok(!/[A-Za-z]{2,}/.test(d), `وصف خيار يحوي لاتينياً: ${d}`);
+  test('أوصاف خيارات staff-logs عربية بالكامل', () => {
+    // بقيت هذه الأوامر بعد دمج /audit-log و/audit-export في /staff-logs.
+    const staffLogs = require('../src/commands/staff-logs');
+    const cmd = staffLogs.commands.find(c => c.data.name === 'staff-logs');
+    const options = cmd.data.options;
+    for (const opt of options) {
+      // خيار action يعرض معرّفات فعلية كمثال (staff_warning_issued) —
+      // ليست ترجمة ناقصة، فتُستثنى مثلًا لا بكلمة مسموحة عامة.
+      if (opt.name === 'action') continue;
+      const words = (opt.description.match(/[A-Za-z]{2,}/g) || [])
+        .filter(w => !['JSON'].includes(w));
+      assert.deepEqual(words, [], `وصف ${opt.name} يحوي لاتينياً دخيلاً: ${opt.description}`);
     }
     // خطأ إملائي سابق: «الأرجاع» ليست كلمة — الصحيح «الأيام».
-    const days = descs.find(d => d.includes('الأيام') || d.includes('الأرجاع'));
-    assert.ok(days && days.includes('الأيام'), `وصف days غير مصحَّح: ${days}`);
+    const days = options.find(o => o.name === 'days').description;
+    assert.ok(days.includes('الأيام'), `وصف days غير مصحَّح: ${days}`);
+    assert.ok(!days.includes('الأرجاع'), `وصف days يحمل الخطأ القديم: ${days}`);
   });
 
   test('حالة «غير مؤهل» في my-status عربية لا فرنسية', () => {

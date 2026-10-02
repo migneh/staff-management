@@ -10,8 +10,12 @@
  * الحلّ يتبع نمط tasks.js وleaves.js: ‎kit.navRow‎ ومعالجٌ بلا حالة يُعيد اشتقاق
  * كل شيء من قاعدة البيانات عند كل ضغطة، والفلاتر تُحمل في معرّف المكوّن. لا
  * staleness ولا رمز معلّق.
+ *
+ * دُمج معه ‎/audit-log‎ و‎/audit-export‎ (كانا نفس الجدول ونفس الصلاحية في
+ * ملفَّن مكرَّرين): بقي أمر واحد هو هذا، وسقف واحد ‎WINDOW‎ للعرض والتصدير
+ * معاً، وزر «تصدير CSV» في صف التنقّل نفسه.
  */
-const { SlashCommandBuilder } = require('discord.js');
+const { SlashCommandBuilder, AttachmentBuilder, ButtonStyle } = require('discord.js');
 const { LEVELS } = require('../constants');
 const audit = require('../services/audit');
 const staffService = require('../services/staff');
@@ -21,7 +25,10 @@ const kit = require('../ui/kit');
 const clock = require('../clock');
 
 /**
- * audit.list يحدّ الجلب عند 100 صف ولا يقبل OFFSET (انظر src/services/audit.js)،
+ * السقف الوحيد لعدد الصفوف: النافذة المعروضة وتصدير CSV يستخدمان هذا الثابت
+ * معاً — ثابت واحد لا يمكن أن يتباعد عن نفسه بعد الدمج (كان ‎/audit-log‎
+ * بسقف 25 وطلب ‎/audit-export‎ بـ 1000 يقتطعه الخدمة إلى 100).
+ * ‎audit.list‎ يحدّ الجلب عند 100 صف ولا يقبل OFFSET (انظر src/services/audit.js)،
  * فالنافذة القابلة للتصفح هي أحدث 100 سجل مطابق. نعلن ذلك صراحةً بدل أن نكتب
  * «من أصل 500» ونعرض مئة صامتة.
  */
@@ -33,7 +40,7 @@ const DEFAULT_PAGE_SIZE = 10;
  * أي رقم أكبر يُجبرنا على قصّ صفوف في منتصف الطريق، وهو العطل الذي أصلحناه.
  */
 const MAX_PAGE_SIZE = 15;
-/** أقصى طول لسطر السجل — التفاصيل الكاملة في ‎/audit-export‎ */
+/** أقصى طول لسطر السجل — التفاصيل الكاملة غير المقصوصة في تصدير CSV */
 const ROW_DETAIL_CLIP = 140;
 /** حارس إضافي: حقول السجلات لا تتجاوز هذا العدد ولا ميزانية الأحرف */
 const ROW_FIELDS_MAX = 6;
@@ -118,15 +125,55 @@ function addLogFields(e, rows) {
   return added;
 }
 
-/** يجمع حالة الأمر من خياراته ثم يبني الحمولة (إمبد + صفوف تنقّل) */
-function buildPayload(state, { targetUnknown = false } = {}) {
-  const filters = {
+/**
+ * خلية CSV واحدة: كل خلية بين اقتباسين، وشرط داخلها يُضاعف. الخلية التي
+ * تبدأ بعلامة معادلة (= + - @) تسبق بعلامة اقتباس حتى لا تنفّذها Excel
+ * كمعادلة عند فتح الملف.
+ */
+function csvCell(value) {
+  let s = String(value ?? '');
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  return `"${s.replace(/"/g, '""')}"`;
+}
+
+/**
+ * ملف CSV بنفس أعمدة مُصدِّر ‎/audit-export‎ القديم بعد دمجه هنا.
+ * التفاصيل تمرّ عبر audit.parseDetails لا JSON.parse خاماً — التفاصيل
+ * التالفة كانت ترمي داخل المعالج وتقضي على التفاعل كله.
+ */
+function buildCsv(rows) {
+  const lines = ['ID,الإجراء,المنفذ,الهدف,التفاصيل,تاريخ الإنشاء'];
+  for (const r of rows) {
+    const details = audit.parseDetails(r.details);
+    const summary = typeof details === 'string' ? details
+      : details && typeof details === 'object' ? JSON.stringify(details)
+        : details == null ? '' : String(details);
+    const actor = r.actor_id ? `<@${r.actor_id}>` : 'النظام';
+    const target = r.target_id ? `<@${r.target_id}>` : '';
+    lines.push([r.id, r.action, actor, target, summary, r.created_at].map(csvCell).join(','));
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+/** فلاتر موحّدة: نفس المعاملات للعرض والتصدير — مسار واحد لا نسختان */
+function filtersFor(state) {
+  return {
     actorId: state.targetId || null,
     targetId: state.targetId || null,
     action: state.action || null,
     since: sinceFor(state.days),
   };
-  const windowRows = audit.list({ ...filters, limit: WINDOW });
+}
+
+/** الجلب نفسه في العرض وفي تصدير CSV — السقف في الحالتين هو WINDOW */
+function fetchRows(state) {
+  return audit.list({ ...filtersFor(state), limit: WINDOW });
+}
+
+/** يجمع حالة الأمر من خياراته ثم يبني الحمولة (إمبد + صفوف تنقّل) */
+function buildPayload(state, { targetUnknown = false } = {}) {
+  const filters = filtersFor(state);
+  const windowRows = fetchRows(state);
   const total = audit.count(filters);
   if (!windowRows.length) {
     return {
@@ -157,9 +204,10 @@ function buildPayload(state, { targetUnknown = false } = {}) {
   e.setFooter({ text: kit.footerLine(`صفحة ${slice.page}/${slice.pages} • أحدث ${slice.items.length} سجلاً معروضاً`) });
 
   const args = [state.size, state.days, state.action, state.targetId, state.detailed ? '1' : '0'];
-  const components = slice.pages > 1
-    ? [kit.navRow({ prefix: 'staff-logs:page', page: slice.page, pages: slice.pages, args })]
-    : [];
+  // صف واحد يجمع التنقّل و«تصدير CSV»: المعاملات نفسها في المعرّفين، فالزر
+  // يُصدّر بالضبط ما تعرضه الصفحة من فلاتر.
+  const exportBtn = kit.button(`staff-logs:export:${args.join(':')}`, 'تصدير CSV', '📤', ButtonStyle.Success);
+  const components = [kit.navRow({ prefix: 'staff-logs:page', page: slice.page, pages: slice.pages, args, extra: [exportBtn] })];
   return { embeds: [e], components };
 }
 
@@ -173,8 +221,9 @@ module.exports = {
         // الوصف يقول ما يفعله الكود فعلاً: بلا days = بلا فلتر زمني (كل السجلات).
         .addIntegerOption(o => o.setName('days').setDescription('عدد الأيام السابقة — بلا فلتر افتراضياً (كل السجلات)').setMinValue(1).setMaxValue(365))
         .addBooleanOption(o => o.setName('detailed').setDescription('عرض تفاصيل JSON (مقتطعة)')),
-      // سجل التدقيق يحتوي إنذارات وملاحظات سرية وأسباب استقالات — كان متاحاً بالخطأ لكل إداري (حتى Helper)؛
-      // يجب أن يطابق صلاحية /audit-log (الإدارة العليا فقط).
+      // سجل التدقيق يحتوي إنذارات وملاحظات سرية وأسباب استقالات — الإدارة العليا
+      // فقط. هذه هي الصلاحية ذاتها التي كان يفرضها /audit-log المُدمَج
+      // (LEVELS.MANAGEMENT) — الدمج لا يوسّع الوصول.
       level: LEVELS.MANAGEMENT,
       async execute(i) {
         if (!settings.featureToggle('auditExport')) {
@@ -203,8 +252,27 @@ module.exports = {
       }
       return i.update(buildPayload(normalize({ page, size, days, action, targetId, detailed })));
     },
+
+    /**
+     * تصدير CSV لنفس الفلاتر ونفس سقف WINDOW — الزر يحمل معاملات الصفحة
+     * نفسها، فالناتج هو ما تعرضه القائمة لا عيّنة منفصلة. الرد رسالة جديدة
+     * (reply) تبقى فيها القائمة ظاهرة خلفها.
+     */
+    'staff-logs:export': async (i, [size, days, action, targetId, detailed]) => {
+      if (!settings.featureToggle('auditExport')) {
+        return i.reply({ embeds: [kit.notice('error', 'هذا الأمر معطّل حالياً.')], ephemeral: true });
+      }
+      const rows = fetchRows(normalize({ size, days, action, targetId, detailed }));
+      if (!rows.length) {
+        return i.reply({ embeds: [kit.notice('warning', 'لا توجد سجلات', 'لا توجد سجلات مطابقة للتصدير.', { color: COLORS.gray })], ephemeral: true });
+      }
+      const file = new AttachmentBuilder(Buffer.from(buildCsv(rows), 'utf-8'), {
+        name: `staff-logs-${new Date().toISOString().slice(0, 10)}.csv`,
+      });
+      return i.reply({ content: `📤 تم تصدير ${arDigits(rows.length)} سجلاً إلى ملف CSV`, files: [file], ephemeral: true });
+    },
   },
 
   // مُصدَّرة للاختبار: تثبت أن البناء يبقى داخل حدود ديسكورد مهما كبرت النافذة
-  __testing: { buildPayload, normalize, rowLine, MAX_PAGE_SIZE, WINDOW },
+  __testing: { buildPayload, normalize, rowLine, buildCsv, fetchRows, MAX_PAGE_SIZE, WINDOW },
 };

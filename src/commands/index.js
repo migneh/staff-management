@@ -17,7 +17,6 @@ const modules = [
   require('./reports'),
   require('./ratings'),
   require('./tasks'),
-  require('./audit'),
   require('./backup'),
   require('./governance'),
   require('./system'),
@@ -46,6 +45,7 @@ const modules = [
  */
 const COMPONENT_ACCESS = {
   'staff-logs:page': { level: LEVELS.MANAGEMENT },
+  'staff-logs:export': { level: LEVELS.MANAGEMENT }, // بعد دمج /audit-log و/audit-export في هذا الأمر
   'mission:complete': { level: LEVELS.STAFF, owner: 'self' },
   'mission:cancel': { level: LEVELS.MANAGEMENT, guarded: true },
   'onboarding:complete': { level: LEVELS.STAFF, owner: 'self' },

@@ -20,6 +20,7 @@ const staffService = require('../src/services/staff');
 const reports = require('../src/commands/reports');
 const staffLogs = require('../src/commands/staff-logs');
 const { commands, resolveComponent } = require('../src/commands');
+const { commandAccessError, componentAccessError } = require('../src/services/commandAccess');
 const { LEVELS } = require('../src/constants');
 
 const IDS = { me: '1005171993940852796', peer: '1490787800168005713', channel: '323456789012345678', guild: '423456789012345678' };
@@ -352,4 +353,83 @@ test('معالج ترقيم /staff-logs محمي بصلاحية الإدارة �
   const entry = resolveComponent('staff-logs:page:2');
   assert(entry, 'المكوّن مسجّل');
   assert.equal(entry.entry.level, LEVELS.MANAGEMENT, `المستوى ${entry.entry.level}`);
+});
+
+// ===== دمج /audit-log و/audit-export في /staff-logs =====
+
+test('السجل بعد الدمج: بقي /staff-logs وأُزيل الأوامر المكرّرة', () => {
+  assert(commands.has('staff-logs'), 'الأمر الناجي موجود');
+  assert(!commands.has('audit-log'), 'أُزيل /audit-log المكرّر');
+  assert(!commands.has('audit-export'), 'أُزيل /audit-export — استُوعب في زر التصدير');
+});
+
+test('الترقيم بعد الدمج: زر التصدير لا يزاحم مسار الصفحات', async () => {
+  seedLogs(30);
+  const i = interaction({ integers: { limit: 10 } });
+  await commands.get('staff-logs').execute(i);
+
+  // زر التصدير ظاهر في نفس صف التنقّل ومعاملاته مطابقة لمعاملات العرض.
+  const exportId = buttonIds(i.payload).find(id => id.startsWith('staff-logs:export:'));
+  assert(exportId, `زر التصدير موجود: ${buttonIds(i.payload).join(', ')}`);
+
+  // كل مسار يُحلّ إلى معالجه الخاص — لا تداخل بين المعرّفين.
+  const page = resolveComponent('staff-logs:page:2:10:0:::0');
+  const exp = resolveComponent(exportId);
+  assert(page && page.handler, 'مسار الصفحات يُوجَد');
+  assert(exp && exp.handler, 'مسار التصدير يُوجَد');
+  assert.notEqual(page.handler, exp.handler, 'مساران مختلفان لا معالج واحد');
+
+  const p = interaction({ customId: 'staff-logs:page:2:10:0:::0' });
+  await page.handler(p, page.args);
+  assert(p.updated, 'الصفحة 2 تُنهي التفاعل بالتحديث');
+  assert(p.payload?.embeds?.length, 'الصفحة 2 تُرسم');
+  assert.deepEqual(rowsShown(p.payload), [20, 19, 18, 17, 16, 15, 14, 13, 12, 11]);
+});
+
+test('تصدير CSV بعد الدمج يُنتج ملفاً بصفوف حقيقية من الخدمة نفسها', async () => {
+  // البذور عبر الخدمة الحقيقية لا عبر SQL مباشر — نفس مسار الإنتاج.
+  for (let k = 1; k <= 3; k++) {
+    audit.record({
+      action: 'staff_warning_issued', actorId: IDS.me, targetId: IDS.peer,
+      details: { note: `سجل تصدير ${k}` }, channelId: IDS.channel,
+    });
+  }
+  const i = interaction({ integers: { limit: 10 } });
+  await commands.get('staff-logs').execute(i);
+  const exportId = buttonIds(i.payload).find(id => id.startsWith('staff-logs:export:'));
+  assert(exportId, 'زر التصدير موجود');
+
+  const resolved = resolveComponent(exportId);
+  const e = interaction({ customId: exportId });
+  await resolved.handler(e, resolved.args);
+
+  const file = e.payload.files?.[0];
+  assert(file, 'الرد يحمل ملفاً');
+  assert.match(file.name, /^staff-logs-\d{4}-\d{2}-\d{2}\.csv$/, `اسم الملف: ${file.name}`);
+  const csv = Buffer.isBuffer(file.attachment) ? file.attachment.toString('utf-8') : String(file.attachment);
+  const lines = csv.trim().split('\n');
+  assert.equal(lines.length, 4, `رأس + ثلاثة صفوف، حصلنا على ${lines.length}`);
+  assert.ok(lines[0].includes('الإجراء') && lines[0].includes('المنفذ'), `الرأس: ${lines[0]}`);
+  assert.equal((csv.match(/staff_warning_issued/g) || []).length, 3, 'الصفوف الثلاث في الملف');
+  assert.ok(csv.includes(`<@${IDS.peer}>`), 'الهدف في الملف');
+});
+
+test('الدمج لا يوسّع الوصول: بقيت صلاحية /audit-log القديمة بالضبط', () => {
+  // المستوى القديم المسجَّل لـ /audit-log قبل الدمج: LEVELS.MANAGEMENT (4) —
+  // ومستوى /audit-export المُزيل كان الموقف نفسه.
+  const cmd = commands.get('staff-logs');
+  assert.equal(cmd.level, LEVELS.MANAGEMENT, `مستوى الأمر الناجي: ${cmd.level}`);
+
+  const low = { level: LEVELS.STAFF, team: 'support', admin: false, serverManager: false, suspended: false };
+  const ok = { ...low, level: LEVELS.MANAGEMENT };
+  assert.ok(commandAccessError(cmd, low), 'إداري بمستوى أدنى يُرفض');
+  assert.equal(commandAccessError(cmd, ok), null, 'الإدارة العليا تمر');
+
+  for (const id of ['staff-logs:page:2:10:0:::0', 'staff-logs:export:10:0:::0']) {
+    const entry = resolveComponent(id);
+    assert(entry, `${id} مسجّل`);
+    assert.equal(entry.entry.level, LEVELS.MANAGEMENT, `${id}: ${entry.entry.level}`);
+    assert.ok(componentAccessError(entry.entry, low, id), `${id} يرفض مستوى أدنى`);
+    assert.equal(componentAccessError(entry.entry, ok, id), null, `${id} يمرّ للإدارة العليا`);
+  }
 });
