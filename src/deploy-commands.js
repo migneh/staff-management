@@ -2,11 +2,16 @@
 const { REST, Routes } = require('discord.js');
 const config = require('./config');
 const { commands } = require('./commands');
+const { structuralProblems } = require('./services/commandStructure');
 
 /** تسجيل أوامر السلاش في السيرفر. يُستدعى تلقائياً من index.js عند التشغيل. */
 async function deployCommands() {
   if (!config.token || !config.clientId || !config.guildId) throw new Error('تأكد من DISCORD_TOKEN و CLIENT_ID و GUILD_ID في .env');
   const body = [...commands.values()].map(c => c.data.toJSON());
+  // الفحص هنا لا في CI وحده: المستخدم يرفع الشجرة إلى المضيف بلا CI، والخطأ
+  // structural لا يظهر إلا عند PUT — نُعيده برسالة عربية قبل أن تُهدر محاولة.
+  const structural = structuralProblems(body);
+  if (structural.length) throw new Error(`بنية حمولة أوامر غير صالحة (${structural.length}):\n${structural.join('\n')}`);
   const rest = new REST().setToken(config.token);
   console.log(`🚀 تسجيل ${body.length} أمر في السيرفر ${config.guildId}...`);
   await rest.put(Routes.applicationGuildCommands(config.clientId, config.guildId), { body });
