@@ -67,11 +67,16 @@ function actionButtons(token) {
 const ID_RE = /^\d{15,22}$/;
 
 /**
- * بوابة تراتب الإجراءات: لا يُسجَّل إجراء على غير إداري.
+ * بوابة تراتب الإجراءات: من ليس إدارياً مسجَّلاً يمرّ — قرار المالك D3.
  *
- * مصدر الرتبة ليس رتب ديسكورد بل جدول TEAM_RANKS في src/constants — وهو نفس
- * المصدر الذي يقرأه src/services/score.js:145 وsrc/services/reports.js:67.
- * نستبعد رتب ديسكورد لأنها قابلة للنتحال بنسخ الاسم.
+ * قرار صاحب المشروع: السجل يضمّ إجراءات على أعضاء عاديين. من لا صف له في
+ * staff_members ليس له رتبة تُحمى، فلا مقارنة تُجرى وحدها لا يُحوَّل الفراغ
+ * إلى رفض كما كان. كل قواعد الرتب تبقى كما هي حرفياً لمن هو مسجَّل —
+ * خصوصاً الرفض بالتساوي والاستعلاء الذي تضمنه التدقيق.
+ *
+ * مصدر الرتبة لمن هو مسجَّل ليس رتب ديسكورد بل جدول TEAM_RANKS في
+ * src/constants — وهو نفس المصدر الذي يقرأه src/services/score.js:145
+ * وsrc/services/reports.js:67. نستبعد رتب ديسكورد لأنها قابلة للنتحال بنسخ الاسم.
  *
  * المقارنة نفسها ليست هنا: بعدُاً معتمداً من صاحب المشروع صارت في
  * permissions.actionRankDenial — المصدر الوحيد (هدف أعلى ⇒ رفض، هدف أدنى ⇒
@@ -81,7 +86,7 @@ const ID_RE = /^\d{15,22}$/;
  */
 function actionBlockedMessage(i, targetId) {
   const target = staffService.get(targetId);
-  if (!target) return '❌ هذا العضو غير مسجل كإداري — لا يُسجَّل عليه إجراء.';
+  if (!target) return null; // قرار D3: لا صفّ ⇒ لا رتبة تُحمى ⇒ لا رفض.
   return actionRankDenial({ team: i.staffInfo?.team, rank: i.staffInfo?.rank, level: i.staffLevel }, target);
 }
 

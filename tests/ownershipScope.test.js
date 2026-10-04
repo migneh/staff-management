@@ -3,7 +3,7 @@
  * اختبارات نطاق الملكية — تفتح ثغرات IDOR وفتحتا write بلا فحص:
  *   1. leave:myleaves  : معرّف مستخدم غريب داخل customId
  *   2. leave:pickaction: قراءة صف إجازة شخص آخر
- *   3. modaction:log   : هدف غير مسجَّل أو أعلى رتبةً من المنفّذ
+ *   3. modaction:log   : هدف أعلى رتبةً من المنفّذ (وغير المسجَّل كإداري يمرّ بقرار المالك D3)
  *   4. /add-note       : بوابة الفريق المفقودة مقارنةً بـ /note
  */
 require('./sqlite-compat').install();
@@ -63,6 +63,8 @@ function interaction({ customId = '', id = IDS.me, level = LEVELS.STAFF, team = 
     async update(p) { calls.update.push(p); this.payload = p; return p; },
     async followUp(p) { calls.followUp.push(p); return p; },
     async showModal(m) { calls.modal = m; return m; },
+    async deferUpdate() { calls.deferred = (calls.deferred || 0) + 1; },
+    async editReply(p) { calls.editReply = (calls.editReply || []); calls.editReply.push(p); return p; },
   };
   return i;
 }
@@ -146,12 +148,27 @@ describe('/log-action — بوابة الهدف قبل الكتابة', () => {
   const modalFor = (target, extra = {}) => interaction({ customId: 'modaction:log:warn',
     texts: { target, reason: 'سبب', duration: 'none', ...extra } });
 
-  test('يرفض هدفاً غير مسجَّل كإداري', async () => {
+  test('يدخل هدفاً غير مسجَّل كإداري إلى بطاقة التأكيد — قرار المالك D3', async () => {
     const i = modalFor(IDS.stranger, {});
     await resolveComponent('modaction:log:warn').handler(i, ['warn']);
-    assert.match(text(i.calls), /غير مسجّل كإداري|غير مسجل كإداري/);
-    assert.equal(i.calls.reply.length, 1);
-    assert.equal(getDb().prepare('SELECT COUNT(*) c FROM mod_actions').get().c, 0);
+    assert.equal(i.calls.reply.length, 1, 'ردّ واحد بلا رفض');
+    assert.match(text(i.calls), /تأكيد تسجيل/, 'بلغ بطاقة التأكيد بدل رسالة «غير مسجل»');
+    assert.ok(!/غير مسج/.test(text(i.calls)), 'لا أثر لرسالة الرفض القديمة');
+    assert.equal(getDb().prepare('SELECT COUNT(*) c FROM mod_actions').get().c, 0, 'لا كتابة قبل التأكيد');
+  });
+
+  test('مسار الكتابة الكامل لهدف غير مسجَّل: التأكيد يكتب سطراً واحداً', async () => {
+    const opener = modalFor(IDS.stranger, {});
+    await resolveComponent('modaction:log:warn').handler(opener, ['warn']);
+    const token = opener.calls.reply[0].components[0].toJSON().components[0].custom_id.split(':').pop();
+    // منفّذ إداري نفسه (نفس المالك والمجلد) يؤكد: إعادة البوابة عند الكتابة
+    // لا تُحوّل الفراغ إلى رفض، فالسطر يُكتب فعلاً للعضو العادي.
+    const confirmer = interaction({ customId: `modaction:confirm:${token}`, texts: {} });
+    await resolveComponent('modaction:confirm').handler(confirmer, [token]);
+    const rows = getDb().prepare('SELECT moderator_id, target_id FROM mod_actions').all();
+    assert.equal(rows.length, 1, 'سطر واحد كُتب بعد التأكيد');
+    assert.equal(rows[0].target_id, IDS.stranger, 'الهدف هو العضو العادي');
+    assert.equal(rows[0].moderator_id, IDS.me, 'المنفّذ هو المُشغِّل');
   });
 
   test('يرفض هدفاً مساوياً في الرتبة — التساوي مرفوض أيضاً', async () => {
@@ -339,7 +356,7 @@ describe('بوابة تراتب الرتب — تساوي المستوى داخ�
  * ما يمرّ عليه فعل log-action وmodaction:log. اختبارات الدالة actionRankDenial
  * وحدها لا تثبت أن هذه البوابة تستدعيها فعلاً (التوثيق لا يُعدّ اتصالاً) —
  * فنمرّر الحالات الأربع عبر المسار الحيّ: السماح الموسّع، ومنع التوسيع بين
- * الفرق، والصعود المطلق، ورفض غير المسجَّل.
+ * الفرق، والصعود المطلق، والسماح بغير المسجَّل (قرار المالك D3).
  */
 describe('بوابة logging الحيّة — actionBlockedMessage تستدعي actionRankDenial', () => {
   const TARGET = IDS.peer;
@@ -362,9 +379,10 @@ describe('بوابة logging الحيّة — actionBlockedMessage تستدعي 
     assert.match(String(actionBlockedMessage(i, TARGET)), /رتبتك أو ما فوقها/);
   });
 
-  test('غير المسجَّل كإداري يُرفض برسالة مميّزة كما قبل الإصلاح', () => {
+  test('غير المسجَّل كإداري يمرّ البوابة الحيّة — قرار المالك D3', () => {
     const i = interaction({ id: IDS.me, team: 'support', rank: 'Support', level: LEVELS.STAFF });
-    assert.match(String(actionBlockedMessage(i, '999999999999999999')), /غير مسجل كإداري/);
+    assert.equal(actionBlockedMessage(i, '999999999999999999'), null,
+      'لا صفّ في staff_members ⇒ لا رتبة تُحمى ⇒ البوابة تعود سماحاً');
   });
 });
 
