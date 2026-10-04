@@ -745,9 +745,11 @@ module.exports = {
              .setDescription('إنشاء قالب إجازة جديد')
              .addStringOption(o => o.setName('id').setDescription('معرف القالب (مثال: weekly_family)').setRequired(true))
              .addStringOption(o => o.setName('name').setDescription('اسم القالب').setRequired(true))
-             .addStringOption(o => o.setName('description').setDescription('وصف القالب'))
+             // المطلوب أولاً: Discord يرفض REQUIRED_INVALID إن جاء خيار مطلوب
+             // بعد خيار اختياري — والترتيب لا يمسّ القراءة التي تجري بالاسم.
              .addStringOption(o => o.setName('type').setDescription('نوع الإجازة').setRequired(true)
                .addChoices(...Object.entries(LEAVE_TYPES).map(([v, n]) => ({ name: `${LEAVE_RULES[v]?.emoji || '🏖️'} ${n}`, value: v }))))
+             .addStringOption(o => o.setName('description').setDescription('وصف القالب'))
              .addIntegerOption(o => o.setName('duration').setDescription('المدة الافتراضية بالأيام'))
              .addStringOption(o => o.setName('reason').setDescription('السبب الافتراضي'))
              .addBooleanOption(o => o.setName('public').setDescription('قالب عام للجميع'))

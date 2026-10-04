@@ -22,6 +22,10 @@ module.exports = {
               { name: 'جميع الأنواع', value: 'all' }
             ))
             .addBooleanOption(o => o.setName('completed').setDescription('عرض المهام المكتملة أيضًا'))
+            // خيار التفصيل يعود إلى sub نفسه: خيار على مستوى الأمر بجانب
+            // subcommands يرفضه Discord (TYPE_INVALID) — والحالات الأخرى
+            // لا تقرأه أصلاً، فـ getBoolean يعود null ويسقط إلى false.
+            .addBooleanOption(o => o.setName('detailed').setDescription('عرض تفصيلي أكثر'))
         )
         .addSubcommand(sub =>
           sub.setName('create')
@@ -64,8 +68,7 @@ module.exports = {
               { name: 'الدعم', value: 'support' },
               { name: 'الإشراف', value: 'moderation' }
             ))
-        )
-        .addBooleanOption(o => o.setName('detailed').setDescription('عرض تفصيلي أكثر')),
+        ),
       level: LEVELS.STAFF,
       async execute(i) {
         const subcommand = i.options.getSubcommand();
