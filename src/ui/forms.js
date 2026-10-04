@@ -46,8 +46,14 @@ function selectLabel({ id, label, description, options = [], values = [], requir
     label: String(o.label).slice(0, 100), value: String(o.value),
     ...(o.description ? { description: String(o.description).slice(0, 100) } : {}),
   }));
+  const minV = required !== false ? 1 : 0;
+  const wantMax = multiple ? (max || clean.length) : 1;
+  // max_values فوق عدد الخيارات الفعلية يرفضه Discord عند العرض
+  // (options[BASE_TYPE_MIN_LENGTH]) — حدث فعلاً في faq-template-create حين
+  // كان max ثابتاً 11 والخيارات المأهولة أقل. يُقصّ على الواقع دائماً.
+  const capMax = clean.length ? Math.min(Math.max(minV, wantMax), clean.length) : Math.max(minV, wantMax);
   const menu = new StringSelectMenuBuilder().setCustomId(id).setRequired(required !== false)
-    .setMinValues(required !== false ? 1 : 0).setMaxValues(Math.max(required !== false ? 1 : 0, multiple ? (max || clean.length) : 1))
+    .setMinValues(minV).setMaxValues(capMax)
     .setPlaceholder(String(placeholder || (multiple ? 'اختر ما ينطبق، ويمكن اختيار أكثر من واحد' : 'اختر من القائمة')).slice(0, 150))
     .addOptions(clean.map(o => ({ ...o, default: values.map(String).includes(o.value) })));
   return new LabelBuilder().setLabel(String(label).slice(0, 45)).setStringSelectMenuComponent(menu)

@@ -148,6 +148,18 @@ describe('حقل التصنيفات في القالب اختياري', () => {
     assert.deepEqual(values, ['all', '2']);
   });
 
+  test('max_values لا يتجاوز الخيارات الفعلية — خطأ المضيف BASE_TYPE_MIN_LENGTH', () => {
+    entry(2, 'تكت'); // تصنيف واحد مأهول ⇒ الخيارات ['all', '2'] فقط
+    const spec = faqCmd.modals.template();
+    const modal = forms.build(spec).toJSON();
+    const categories = modal.components.find(c => c.component?.custom_id === 'categories');
+    const opts = categories.component.options;
+    assert.ok(opts.length < FAQ_CATEGORIES.length + 1, `حالة الإنتاج: ${opts.length} خيارات مقابل max ثابت 11`);
+    assert.ok(categories.component.max_values <= opts.length,
+      `max_values=${categories.component.max_values} فوق ${opts.length} خيارات — يرفضه Discord عند العرض`);
+    assert.equal(categories.component.max_values, opts.length, 'يُقصّ على الواقع: اختيار الكل متاح');
+  });
+
   test('تركه فارغاً = كل التصنيفات (عبر المعالج الحقيقي)', async () => {
     entry(1, 'قانون');
     const i = interaction({
