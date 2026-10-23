@@ -62,7 +62,6 @@ function rawRows(n, team = 'support') {
       tickets: (k * 7) % 120, avgRating: 4.35, ratingCount: 6, avgDuration: 47, reopened: 2,
       actions: (k * 11) % 150, warnings: 0, positiveNotes: 1, negativeNotes: 0,
     },
-    score: 55 + (k % 45), grade: 'B', factors: [], assessedMax: 100,
     warnings: [], absentDays: 4, lastActivityHours: 6,
   }));
 }

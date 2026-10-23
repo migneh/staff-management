@@ -1,8 +1,9 @@
 'use strict';
 const { getDb } = require('../database');
-const { SUPPORT_PROMOTIONS, MOD_PROMOTIONS, PROBATION } = require('../constants');
+const { SUPPORT_PROMOTIONS, MOD_PROMOTIONS, PROBATION, POINTS_THRESHOLDS } = require('../constants');
 const clock = require('../clock');
-const score = require('./score');
+const points = require('./points');
+const reports = require('./reports');
 const settings = require('./settings');
 
 /** الحد الأدنى لنسبة التكتات المُقيَّمة قبل الاعتماد على المتوسط */
@@ -62,29 +63,29 @@ function safeJson(text) {
   }
 }
 
-/** درجة العضو داخل تقرير شهري محفوظ، أو null إن لم يرد فيه */
-function memberScore(parsed, userId) {
+/** نقاط العضو داخل تقرير شهري محفوظ، أو null إن لم يرد فيه */
+function memberPoints(parsed, userId) {
   const members = parsed && Array.isArray(parsed.members) ? parsed.members : [];
   const row = members.find(m => m && String(m.user) === String(userId));
-  const value = row ? Number(row.score) : NaN;
+  const value = row ? Number(row.points) : NaN;
   return Number.isFinite(value) ? value : null;
 }
 
 /**
- * «الأداء المستقر» (stableMonths/stableMinScore في ثوابت الترقيات).
+ * «الأداء المستقر» (stableMonths/stableMinPoints في ثوابت الترقيات).
  * لا يُحسب Score اليوم ويُنسى غداً: القراءة من التقارير الشهرية المحفوظة
  * (saved_reports) لأنها مُؤرَّخة ولا ترجع بأثر رجعي بعد اعتمادها.
  * التقرير الشهري يُخزَّن لكل فريق على حدة بصيغة `${period}:${team}`، وقد توجد
  * نسخ محفوظة بلا لاحقة فريق (تقارير أقدم) — نقبل الصيغتين ونجمع الشهر مرة واحدة.
  * @param {string} userId العضو
  * @param {number} months عدد الأشهر المطلوبة (الأحدث أولاً)
- * @param {number} minScore أدنى درجة مقبولة في كل شهر
+ * @param {number} minPoints أدنى درجة مقبولة في كل شهر
  * @param {string} [team] يفضّل نسخة تقرير هذا الفريق إن وُجدت للفريقين
- * @returns {{passed:boolean, periods:string[], scores:number[], actual:string, required:string, missing:number}}
+ * @returns {{passed:boolean, periods:string[], points:number[], actual:string, required:string, missing:number}}
  */
-function stability(userId, months, minScore, team) {
+function stability(userId, months, minPoints, team) {
   const wanted = Math.max(1, Math.trunc(Number(months) || 0));
-  const floor = Number(minScore) || 0;
+  const floor = Number(minPoints) || 0;
   const db = getDb();
   // نمرّ على الصفوف مرة واحدة ونفكّ ترميز كل تقرير مرة واحدة. النسخة السابقة كانت تمرّ مرتين وتفكّ ترميز كل صف مرتين على الأقل — نحو 144 عملية JSON.parse لعضو واحد عند 3 سنوات.
   // النتيجة هي نفسها: تقريرا الفريقين لنفس الشهر شهر واحد لا شهران، ونسخة فريق العضو مفضّلة.
@@ -96,18 +97,18 @@ function stability(userId, months, minScore, team) {
     const held = chosen.get(period);
     // نسخة الفريق المفضّلة لا تُستبدل، والبديل يُكتب فقط إن لم يوجد شيء بعد.
     if (held && (held.preferred || !preferred)) continue;
-    const value = memberScore(safeJson(row.data), userId);
+    const value = memberPoints(safeJson(row.data), userId);
     if (value == null) continue; // التقرير لا يخص هذا العضو — جرّب نسخة الفريق الأخرى
     chosen.set(period, { value, preferred });
   }
   const periods = [...chosen.keys()].sort().reverse().slice(0, wanted);
-  const scores = periods.map(p => chosen.get(p).value);
+  const points = periods.map(p => chosen.get(p).value);
   const missing = wanted - periods.length;
-  const passed = missing === 0 && scores.every(s => s >= floor);
+  const passed = missing === 0 && points.every(s => s >= floor);
   return {
-    passed, periods, scores, missing,
-    actual: scores.length
-      ? `${scores.join(' / ')} (${periods.join(' / ')})`
+    passed, periods, points, missing,
+    actual: points.length
+      ? `${points.join(' / ')} (${periods.join(' / ')})`
       : 'لا توجد تقارير شهرية محفوظة',
     required: `${wanted} ${wanted > 1 ? 'أشهر متتالية' : 'شهر متتالٍ'} بحد ${floor}+`,
   };
@@ -121,7 +122,10 @@ function stability(userId, months, minScore, team) {
  */
 function evaluate(staff) {
   const rule = nextPromotion(staff);
-  if (!rule) return { rule: null, eligible: false, checks: [], score: null, grade: null, reason: 'لا توجد ترقية تلقائية لهذه الرتبة (يدوية بقرار Boss)' };
+  if (!rule) return {
+    rule: null, eligible: false, checks: [], points: points.getBalance(staff.user_id), rank: staff.rank,
+    reason: 'لا توجد ترقية تلقائية لهذه الرتبة (يدوية بقرار Boss)',
+  };
 
   const db = getDb();
   const today = clock.today();
@@ -144,16 +148,29 @@ function evaluate(staff) {
 
   ok('مدة الخدمة بالرتبة', months >= rule.months, `${months.toFixed(1)} شهر`, `${rule.months} شهر`);
 
-  // ===== بوابة Score =====
-  // القراءة من نفس نافذة الشروط الأخرى (windowDays) لا من 30 يوماً ثابتة،
-  // وإلا صار الأداء يُقاس على نافذة لا علاقة لها بالترقية المعلنة.
-  const raw = score.monthlyRaw(staff.user_id, windowDays) || {};
-  const sc = score.compute(staff, raw) || {};
-  const currentScore = Number.isFinite(Number(sc.score)) ? Number(sc.score) : 0;
-  if (rule.score != null) {
-    ok(`تقييم الأداء Score (${windowLabel(windowDays)})`, currentScore >= rule.score,
-      `${currentScore}/100 — ${score.grade(currentScore)}`, `${rule.score}+`);
+  // ===== بوابة النقاط (نظام النقاط فقط — قرار المالك) =====
+  // Score أُخرج من أهلية الترقية: بقي أداة تقارير وتقييم لا بوابة. السبب أن
+  // درجة واحدة مركّبة تخفي «هل تقدّم فعلاً؟» خلف متوسط، بينما النقاط دفترٌ
+  // كل سطر فيه سببٌ معلوم — والترقية تُسأل «كم جمعتَ منذ صرت بهذه الرتبة؟».
+  //
+  // الرصيد محسوب على العصر الحالي (rank_epoch): الترقية تصفّره (setRank(newEpoch))،
+  // فالسؤال هنا هو «كم جمعتَ منذ آخر ترقية» لا «كم جمعتَ في تاريخك كله» — وإلا
+  // لترقّى العضو على نقاط رتبة سابقة، وصار الرصيد عدّاداً لا يعود لصفر أبداً.
+  const currentPoints = points.getBalance(staff.user_id);
+  const pointsThreshold = POINTS_THRESHOLDS[staff.team]?.[staff.rank];
+  if (pointsThreshold != null) {
+    ok('نقاط الترقية', currentPoints >= pointsThreshold,
+      `${currentPoints}`, `${pointsThreshold}+`);
+  } else {
+    // لا عتبة معرَّفة = لا ترقية تلقائية. تمرير البوابة لغياب عتبتها يمنح
+    // ترقيةً بلا شرط نقاط — وهو عكس قرار «النقاط فقط». فتسقط بصريح لا صامت:
+    // الإداري يرى «ترقية يدوية» فيقرر، بدل أن يُرقّى على بوابة مفقودة.
+    ok('نقاط الترقية', false,
+      `${currentPoints}`, 'لا عتبة معرَّفة — ترقية يدوية');
   }
+
+  // الحصول على البيانات الخام للنافذة (بديل عن score.monthlyRaw)
+  const raw = reports.getRaw(staff.user_id, windowDays) || {};
 
   if (staff.team === 'support') {
     // الرسائل في قنوات العمل (المخلفات) خلال النافذة
@@ -236,10 +253,10 @@ function evaluate(staff) {
 
   // الأداء المستقر: من التقارير الشهرية المحفوظة، لا من Score اليوم.
   if (rule.stableMonths) {
-    const st = stability(staff.user_id, rule.stableMonths, rule.stableMinScore, staff.team);
+    const st = stability(staff.user_id, rule.stableMonths, rule.stableMinPoints, staff.team);
     const label = `الأداء المستقر (${rule.stableMonths} ${rule.stableMonths > 1 ? 'أشهر' : 'شهر'})`;
     ok(label, st.passed,
-      st.missing > 0 && st.scores.length ? `${st.actual} — ينقص ${st.missing} ${st.missing > 1 ? 'أشهر' : 'شهر'}` : st.actual,
+      st.missing > 0 && st.points.length ? `${st.actual} — ينقص ${st.missing} ${st.missing > 1 ? 'أشهر' : 'شهر'}` : st.actual,
       st.required);
   }
 
@@ -247,7 +264,7 @@ function evaluate(staff) {
 
   return {
     rule, eligible: checks.every(c => c.pass), checks, months, windowDays, warnWindowDays,
-    score: currentScore, grade: score.grade(currentScore), factors: sc.factors || [], raw,
+    points: currentPoints, rank: staff.rank, raw,
   };
 }
 

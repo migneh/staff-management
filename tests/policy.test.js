@@ -114,8 +114,8 @@ describe('بوابات الترقية ونصابها', () => {
   test('الأداء المستقر يُقرأ من التقارير الشهرية المحفوظة', () => {
     seedStaff('s9', 'support', 'Support Analyst', { since: '2024-01-01 00:00:00' });
     const db = getDb();
-    const save = (period, score) => db.prepare(`INSERT INTO saved_reports (report_type, period, data) VALUES ('monthly', ?, ?)`)
-      .run(period, JSON.stringify({ members: [{ user: 's9', score }] }));
+    const save = (period, points) => db.prepare(`INSERT INTO saved_reports (report_type, period, data) VALUES ('monthly', ?, ?)`)
+      .run(period, JSON.stringify({ members: [{ user: 's9', points }] }));
     save('2026-06', 80); save('2026-07', 75); save('2026-08', 72);
     const st = promotions.stability('s9', 3, 70);
     assert.equal(st.passed, true);

@@ -170,34 +170,9 @@ function progressBar(value, max, size = 10) {
   return '▰'.repeat(filled) + '▱'.repeat(size - filled);
 }
 
-// ===== ألوان وأشكال Score =====
-// العتبات نفسها المستخدمة في grade (90/75/60/40) ومتسقة مع reports.js —
-// مصدر واحد يمنع أن تلوّن بطاقةُ الوضعَ جيداً بينما تقول البطاقة المجاورة ضعيف.
-const SCORE_BANDS = [
-  { min: 90, color: COLORS.success, emoji: '🏆' },
-  { min: 75, color: COLORS.info, emoji: '⭐' },
-  { min: 60, color: COLORS.info, emoji: '📈' },
-  { min: 40, color: COLORS.warning, emoji: '⚠️' },
-];
-
-/** لون Score — يُعيد محايداً لأي درجة غير قابلة للقياس بدل إفساد البطاقة. */
-function scoreColor(score) {
-  const n = Number(score);
-  if (!Number.isFinite(n)) return COLORS.gray;
-  return (SCORE_BANDS.find(b => n >= b.min) || { color: COLORS.danger }).color;
-}
-
-/** رمز Score — شكل مختلف لكل نطاق، فلا يعتمد الفهم على اللون وحده. */
-function scoreEmoji(score) {
-  const n = Number(score);
-  if (!Number.isFinite(n)) return '—';
-  return (SCORE_BANDS.find(b => n >= b.min) || { emoji: '⛔' }).emoji;
-}
-
 module.exports = {
   COLORS, embed, userEmbed, ok, fail, divider,
   nowIso, today, addDays, isValidDate, daysBetween, monthsSince, hoursSince, discordTs,
   arDigits, normalizeDigits, toInt, truncate, clipRich,
   getChannel, sendToChannel, log, dm, replyEphemeral, progressBar,
-  scoreColor, scoreEmoji,
 };

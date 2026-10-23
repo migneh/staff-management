@@ -4,6 +4,7 @@ const { getDb } = require('../database');
 const settings = require('./settings');
 const { ACTIVITY_WEIGHTS, SPAM } = require('../constants');
 const clock = require('../clock');
+const points = require('./points');
 
 // ===== تصنيف القناة =====
 function classifyChannel(channel) {
@@ -85,7 +86,15 @@ function record(userId, channel, content) {
 
   db.prepare(`INSERT INTO activity_logs (user_id, channel_id, channel_type, weight, content_hash, day) VALUES (?, ?, ?, ?, ?, ?)`)
     .run(userId, channel?.id || '0', type, ACTIVITY_WEIGHTS[type], h, day);
-  return { counted: true, type };
+
+  // منح نقاط chat_help لقنوات العمل (ليس general)
+  let earned = 0;
+  if (type !== 'general') {
+    const r = points.add({ userId, reasonKey: 'chat_help', refType: 'chat', refId: h, addedBy: 'auto' });
+    if (r.ok) earned += r.points;
+  }
+
+  return { counted: true, type, earned };
 }
 
 /**

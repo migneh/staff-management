@@ -21,7 +21,7 @@ const { test, beforeEach, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const { openMemoryDb, getDb } = require('../src/database');
 const clock = require('../src/clock');
-const score = require('../src/services/score');
+const reports = require('../src/services/reports');
 const promotions = require('../src/services/promotions');
 
 const UID_ = '111111111111111111';
@@ -91,20 +91,20 @@ function seedStaff(userId, team) {
     .run(userId, `u${userId}`, team, team === 'support' ? 'Support' : 'Moderator');
 }
 
-/** يُشغّل score.monthlyRaw وpromotions.evaluate لعضوين ويعيد كل نص استعلام، مفصولاً */
+/** يُشغّل reports.getRaw وpromotions.evaluate لعضوين ويعيد كل نص استعلام، مفصولاً */
 function allWindowQueries() {
-  const byCaller = { score: [], promotions: [] };
+  const byCaller = { raw: [], promotions: [] };
   for (const [id, team] of [[UID_, 'support'], [OTHER, 'moderation']]) {
     seedStaff(id, team);
     const member = getDb().prepare('SELECT * FROM staff_members WHERE user_id = ?').get(id);
     captured.length = 0;
-    captureQueries(() => score.monthlyRaw(id, 30, 0));
-    byCaller.score.push(...captured);
+    captureQueries(() => reports.getRaw(id, 30, 0));
+    byCaller.raw.push(...captured);
     captured.length = 0;
     captureQueries(() => promotions.evaluate(member));
     byCaller.promotions.push(...captured);
   }
-  byCaller.all = [...byCaller.score, ...byCaller.promotions];
+  byCaller.all = [...byCaller.raw, ...byCaller.promotions];
   return byCaller;
 }
 
@@ -120,7 +120,7 @@ function isTwoSidedWindow(sql) {
 describe('shape: no date() on a range-bounded column', () => {
   beforeEach(() => { openMemoryDb(); });
 
-  test('no query in score/promotions wraps a column in date() inside WHERE', () => {
+  test('no query in reports/promotions wraps a column in date() inside WHERE', () => {
     const offenders = allWindowQueries().all
       .filter(sql => /WHERE[\s\S]*?\bdate\s*\(/i.test(sql))
       .map(sql => sql.replace(/\s+/g, ' ').slice(0, 160));
@@ -128,8 +128,8 @@ describe('shape: no date() on a range-bounded column', () => {
   });
 
   test('every window query on an indexed table bounds the raw column with >=', () => {
-    const { score: sc, promotions: promo } = allWindowQueries();
-    const windows = [...sc, ...promo].filter(sql =>
+    const { raw, promotions: promo } = allWindowQueries();
+    const windows = [...raw, ...promo].filter(sql =>
       /FROM (ticket_metrics|support_ratings|mod_actions|warnings|staff_notes)\b/i.test(sql));
     assert.ok(windows.length >= 14, `expected the 14 window queries, saw ${windows.length}`);
     for (const sql of windows) {
@@ -147,9 +147,9 @@ describe('shape: no date() on a range-bounded column', () => {
   });
 
   test('the closed windows in monthlyRaw are exactly the half-open ones', () => {
-    const closed = allWindowQueries().score.filter(isTwoSidedWindow)
+    const closed = allWindowQueries().raw.filter(isTwoSidedWindow)
       .map(sql => sql.replace(/\s+/g, ' ').slice(0, 70));
-    assert.equal(closed.length, 10, `expected 10 closed windows (5 tables x 2 staff), saw ${closed.length}:\n${closed.join('\n')}`);
+    assert.equal(closed.length, 12, `expected 12 closed windows (6 queries per staff: staff_notes positive and negative separately), saw ${closed.length}:\n${closed.join('\n')}`);
   });
 
   test('no BETWEEN on a timestamp column — only on the day column', () => {
@@ -163,7 +163,7 @@ describe('shape: no date() on a range-bounded column', () => {
     }
   });
 
-  test('activity_logs: score reads the indexed day column, promotions bounds created_at', () => {
+  test('activity_logs: reports reads the indexed day column, promotions bounds created_at', () => {
     // score.js يقارن بday (عمود مؤرَّخ بتوقيت TZ عبر today()) فالمقارنة نصية
     // مباشرة على (user_id, day). promotions.js كان يقارن بـ date(created_at)
     // — UTC — فالتبديل إلى day هنا يزيح حدّ النافذة حتى 3 ساعات عند الطرف،
@@ -171,9 +171,9 @@ describe('shape: no date() on a range-bounded column', () => {
     // ملاحظة: evaluate يستدعي monthlyRaw داخلياً، فاستعلام score يظهر داخل
     // سلة promotions أيضاً — نميّزه بنمط محدّده (day BETWEEN بثلاثة معاملات).
     const isMonthlyRawActivity = sql => /FROM activity_logs/i.test(sql) && /day BETWEEN \? AND \?/i.test(sql);
-    const { score: sc, promotions: promo } = allWindowQueries();
+    const { raw, promotions: promo } = allWindowQueries();
 
-    for (const sql of sc.filter(s => /FROM activity_logs/i.test(s))) {
+    for (const sql of raw.filter(s => /FROM activity_logs/i.test(s))) {
       assert.match(sql.replace(/\s+/g, ' '), /WHERE user_id = \? AND day/i,
         `score.js must keep the indexed day column: ${sql.replace(/\s+/g, ' ').slice(0, 140)}`);
     }
@@ -190,7 +190,7 @@ describe('shape: no date() on a range-bounded column', () => {
   });
 
   test('the leave_requests overlap query in score compares raw date columns', () => {
-    const leave = allWindowQueries().score.find(s => /FROM leave_requests/i.test(s));
+    const leave = allWindowQueries().raw.find(s => /FROM leave_requests/i.test(s));
     assert.ok(leave, 'expected the leave_requests overlap query');
     const oneLine = leave.replace(/\s+/g, ' ');
     assert.match(oneLine, /start_date <= \? AND end_date >= \?/i, oneLine.slice(0, 160));
@@ -337,7 +337,7 @@ describe('monthlyRaw عبر النافذة الحقيقية', () => {
     ticket('before', `${clock.addDays(startDay, -1)} 09:00:00`, 0);    // خارج
     ticket('after', win.endExclusive, 0);                               // خارج
 
-    const raw = score.monthlyRaw(u, 30, 0);
+    const raw = reports.getRaw(u, 30, 0);
     assert.equal(raw.tickets, 3, 'ثلاثة داخل النافذة، لا الأربعة الأخرى');
     assert.equal(raw.reopened, 1);
   });
@@ -350,7 +350,7 @@ describe('monthlyRaw عبر النافذة الحقيقية', () => {
       VALUES (?, 'rev', 1, 'old', 'c', 'g', 'b', ?)`).run(u, '2020-01-01 00:00:00');
     db.prepare(`INSERT INTO support_ratings (staff_id, reviewer_id, stars, source_message_id, source_channel_id, source_guild_id, source_bot_id, rated_at)
       VALUES (?, 'rev', 5, 'new', 'c', 'g', 'b', ?)`).run(u, `${today} 00:00:00`);
-    const raw = score.monthlyRaw(u, 30, 0);
+    const raw = reports.getRaw(u, 30, 0);
     assert.equal(raw.ratingSource, 'external');
     assert.equal(raw.ratingCount, 1);
     assert.equal(raw.avgRating, 5, 'التقييم القديم خارج النافذة لا يُحسب');
@@ -439,31 +439,31 @@ describe('stability يفكّ ترميز كل تقرير مرة واحدة', () =
   }
 
   test('تقرير لكل فريق لنفس الشهر: الشهر يُحسب مرة واحدة ونسخة فريق العضو مفضّلة', () => {
-    seedReport('2026-03:support', 'support', [{ user: UID_, score: 91 }]);
-    seedReport('2026-03:moderation', 'moderation', [{ user: UID_, score: 40 }]);
+    seedReport('2026-03:support', 'support', [{ user: UID_, points: 91 }]);
+    seedReport('2026-03:moderation', 'moderation', [{ user: UID_, points: 40 }]);
     const st = promotions.stability(UID_, 3, 75, 'support');
     assert.deepEqual(st.periods, ['2026-03'], 'تقريرا الفريقين لشهر واحد = شهر واحد');
-    assert.deepEqual(st.scores, [91], 'نسخة فريق العضو مفضّلة على نسخة الفريق الآخر');
+    assert.deepEqual(st.points, [91], 'نسخة فريق العضو مفضّلة على نسخة الفريق الآخر');
     assert.equal(st.missing, 2, 'شهران ناقصان من الثلاثة المطلوبة');
     // الشهر الموجود درجةً 91 فوق الحدّ 75، لكن نقص شهرين يمنع اجتياز البوابة
     assert.equal(st.passed, false, 'missing blocks the gate even when the present month passes');
-    assert.deepEqual(promotions.stability(UID_, 1, 75, 'support').scores, [91]);
+    assert.deepEqual(promotions.stability(UID_, 1, 75, 'support').points, [91]);
     assert.equal(promotions.stability(UID_, 1, 75, 'support').passed, true);
   });
 
   test('عضو في نسخة فريقه فقط: لا تُفقد قيمته، والشهر يُحتسب مرة واحدة', () => {
-    seedReport('2026-02:moderation', 'moderation', [{ user: UID_, score: 88 }]);
+    seedReport('2026-02:moderation', 'moderation', [{ user: UID_, points: 88 }]);
     const st = promotions.stability(UID_, 2, 75, 'support');
     assert.deepEqual(st.periods, ['2026-02']);
-    assert.deepEqual(st.scores, [88]);
+    assert.deepEqual(st.points, [88]);
   });
 
   test('يفضّل نسخة الفريق حتى لو وردت بعد نسخة الفريق الآخر في الترتيب', () => {
     // team غير support: صف moderation أولاً ثم support لنفس الشهر
-    seedReport('2026-01:moderation', 'moderation', [{ user: UID_, score: 30 }]);
-    seedReport('2026-01:support', 'support', [{ user: UID_, score: 95 }]);
+    seedReport('2026-01:moderation', 'moderation', [{ user: UID_, points: 30 }]);
+    seedReport('2026-01:support', 'support', [{ user: UID_, points: 95 }]);
     const st = promotions.stability(UID_, 1, 75, 'support');
-    assert.deepEqual(st.scores, [95], 'الترتيب لا يقرّر التفضيل — هوية الفريق تقرّره');
+    assert.deepEqual(st.points, [95], 'الترتيب لا يقرّر التفضيل — هوية الفريق تقرّره');
     assert.equal(st.passed, true);
   });
 
@@ -471,8 +471,8 @@ describe('stability يفكّ ترميز كل تقرير مرة واحدة', () =
     // 36 شهراً × تقريرين = 72 صفاً، كما في 3 سنوات.
     for (let m = 1; m <= 36; m++) {
       const period = `20${String(20 + Math.floor(m / 12)).slice(2)}-${String((m % 12) + 1).padStart(2, '0')}`;
-      seedReport(`${period}:support`, 'support', [{ user: UID_, score: 80 }]);
-      seedReport(`${period}:moderation`, 'moderation', [{ user: UID_, score: 50 }]);
+      seedReport(`${period}:support`, 'support', [{ user: UID_, points: 80 }]);
+      seedReport(`${period}:moderation`, 'moderation', [{ user: UID_, points: 50 }]);
     }
     let parses = 0;
     const originalParse = JSON.parse;
@@ -489,11 +489,11 @@ describe('stability يفكّ ترميز كل تقرير مرة واحدة', () =
   });
 
   test('تقرير تالف أو بلا العضو لا يُسقط التقييم', () => {
-    seedReport('2026-04:support', 'support', [{ user: UID_, score: 90 }]);
+    seedReport('2026-04:support', 'support', [{ user: UID_, points: 90 }]);
     getDb().prepare(`INSERT INTO saved_reports (report_type, period, data) VALUES ('monthly', '2026-05:support', 'not json')`).run();
     getDb().prepare(`INSERT INTO saved_reports (report_type, period, data) VALUES ('monthly', '2026-06:support', '{"members":[]}')`).run();
     const st = promotions.stability(UID_, 1, 75, 'support');
-    assert.deepEqual(st.scores, [90]);
+    assert.deepEqual(st.points, [90]);
     assert.equal(st.passed, true);
   });
 });

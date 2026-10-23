@@ -16,7 +16,7 @@ function ensureOnboarding(userId) {
   const start = today();
   const seed = db.transaction(() => {
     insert.run(userId, 'قراءة قاعدة المعرفة الأساسية', 'اقرأ القوانين والسياسات المهمة من /faq.', addDays(start, 2), mentorId || null);
-    insert.run(userId, 'قراءة نظام الأداء والترقيات', 'راجع /promotion-info وافهم طريقة احتساب Score والنقاط.', addDays(start, 4), mentorId || null);
+    insert.run(userId, 'قراءة نظام الأداء والترقيات', 'راجع /promotion-info وافهم طريقة احتساب نقاط الترقية وشروطها.', addDays(start, 4), mentorId || null);
     insert.run(userId, 'تأكيد الجاهزية واجتماع مع المرشد', 'أكمل الخطوتين ثم احجز اجتماعاً مع مرشدك لتقييم الجاهزية. بعد ذلك، يراجع المدير جاهزيتك قبل التحويل من التجربة إلى نشط.', addDays(start, 7), mentorId || null);
   });
   seed();

@@ -2,11 +2,11 @@
 const forms = require('../ui/forms');
 const { homeRow } = require('../ui/navigation');
 const { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const { LEVELS, SUPPORT_PROMOTIONS, MOD_PROMOTIONS } = require('../constants');
+const { LEVELS, SUPPORT_PROMOTIONS, MOD_PROMOTIONS, POINTS_THRESHOLDS } = require('../constants');
 const promo = require('../services/promotions');
 const staffService = require('../services/staff');
 const audit = require('../services/audit');
-const { embed, COLORS, replyEphemeral, sendToChannel, dm, log } = require('../utils');
+const { embed, COLORS, replyEphemeral, sendToChannel, dm, log, arDigits } = require('../utils');
 
 function checksText(checks) {
   return checks.map(c => `${c.pass ? '✅' : '❌'} **${c.label}**: ${c.actual} (المطلوب: ${c.required})`).join('\n');
@@ -79,9 +79,13 @@ module.exports = {
         const s = staffService.get(i.user.id);
         const e1 = embed('🎧 ترقيات فريق الدعم الفني', SUPPORT_PROMOTIONS.map(p => {
           const msg = p.minMessages ? `📝 ${p.minMessages}+ رسالة` : '';
-          return `**${p.from} → ${p.to}**\n⏳ ${p.months} شهر ${msg ? '• ' + msg : ''} • 📊 Score ${p.score}+ • ⭐ ${p.rating}+ • ⚠️ أقصى ${p.maxWarnings} إنذار • 👥 ${p.approvers}`;
+          const pointsThreshold = POINTS_THRESHOLDS.support?.[p.from] || '—';
+          return `**${p.from} → ${p.to}**\n⏳ ${p.months} شهر ${msg ? '• ' + msg : ''} • 💯 نقاط ${arDigits(pointsThreshold)}+ • ⭐ ${p.rating}+ • ⚠️ أقصى ${p.maxWarnings} إنذار • 👥 ${p.approvers}`;
         }).join('\n\n') + '\n\n**Support Office → Boss**: يدوي بقرار Boss', COLORS.info);
-        const e2 = embed('🛡️ ترقيات فريق الإشراف', MOD_PROMOTIONS.map(p => `**${p.from} → ${p.to}**\n⏳ ${p.months} شهر • 📊 Score ${p.score}+ • 🛡️ ${p.actions}+ مخالفة • ⚠️ أقصى ${p.maxWarnings} إنذار • 👥 ${p.approvers}`).join('\n\n'), COLORS.info);
+        const e2 = embed('🛡️ ترقيات فريق الإشراف', MOD_PROMOTIONS.map(p => {
+          const pointsThreshold = POINTS_THRESHOLDS.moderation?.[p.from] || '—';
+          return `**${p.from} → ${p.to}**\n⏳ ${p.months} شهر • 💯 نقاط ${arDigits(pointsThreshold)}+ • 🛡️ ${p.actions}+ مخالفة • ⚠️ أقصى ${p.maxWarnings} إنذار • 👥 ${p.approvers}`;
+        }).join('\n\n'), COLORS.info);
         return i.reply({ embeds: [e1, e2], ephemeral: true });
       },
     },

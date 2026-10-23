@@ -1,11 +1,10 @@
 'use strict';
 const { getDb } = require('../database');
 const staffService = require('./staff');
-const score = require('./score');
+const points = require('./points');
 const { hoursSince } = require('../utils');
 const clock = require('../clock');
-const { LEVELS, INACTIVE_STATUSES } = require('../constants');
-const { rankInfo } = require('./permissions');
+const { INACTIVE_STATUSES } = require('../constants');
 const logger = require('../logger').log('reports');
 
 /**
@@ -145,17 +144,87 @@ function rawBatch(userIds, days = 30) {
 }
 /** تقرير فردي كامل */
 function individual(staff, days = 30, pre = null) {
-  const raw = pre ? pre.row : score.monthlyRaw(staff.user_id, days);
-  const sc = score.compute(staff, raw);
+  const raw = pre ? pre.row : getRaw(staff.user_id, days);
+  const totalPoints = pre?.points ?? points.getBalance(staff.user_id);
+  const currentRank = staff.rank;
   const warns = pre
     ? pre.warns
     : getDb().prepare(`SELECT warning_type, COUNT(*) c FROM warnings WHERE user_id = ? AND voided_at IS NULL AND created_at >= datetime('now', ?) GROUP BY warning_type`).all(staff.user_id, `-${days} days`);
   const absentDays = Math.max(0, days - raw.activeDays - raw.leaveDays);
   return {
-    staff, raw, score: sc.score, factors: sc.factors, assessedMax: sc.assessedMax, grade: score.grade(sc.score),
+    staff, raw, points: totalPoints, rank: currentRank,
     warnings: warns, absentDays,
     lastActivityHours: hoursSince(staff.last_activity),
   };
+}
+
+/** الحصول على البيانات الخام للعضو (بديل عن score.monthlyRaw) */
+function getRaw(userId, days = 30, offsetDays = 0) {
+  const windowDays = Math.max(1, Number(days) || 30);
+  const offset = Math.max(0, Math.trunc(Number(offsetDays) || 0));
+  const end = clock.addDays(clock.today(), -offset);
+  const start = clock.addDays(end, -(windowDays - 1));
+  const win = clock.dayWindow(start, end) || { start, endExclusive: end };
+  const db = getDb();
+
+  const base = () => ({
+    messages: 0, weightedMessages: 0, activeDays: 0, tickets: 0, avgRating: null,
+    ratingCount: 0, ratingSource: null, avgDuration: null, reopened: 0, actions: 0,
+    warnings: 0, positiveNotes: 0, negativeNotes: 0, leaveDays: 0,
+  });
+
+  const row = base();
+
+  // النشاط
+  const a = db.prepare(`SELECT COUNT(*) c, COALESCE(SUM(weight), 0) w, COUNT(DISTINCT day) d
+    FROM activity_logs WHERE user_id = ? AND day BETWEEN ? AND ?`).get(userId, start, end);
+  if (a) { row.messages = a.c; row.weightedMessages = Math.round(a.w * 100) / 100; row.activeDays = a.d; }
+
+  // التكتات
+  const t = db.prepare(`SELECT COUNT(*) c, AVG(duration) dur, COALESCE(SUM(reopened), 0) re,
+      COUNT(rating) rated, AVG(rating) rating
+    FROM ticket_metrics WHERE claimer = ? AND closed_at >= ? AND closed_at < ?`).get(userId, win.start, win.endExclusive);
+  if (t) {
+    row.tickets = t.c;
+    row.reopened = t.re;
+    row.avgDuration = t.dur == null ? null : Math.round(t.dur * 100) / 100;
+  }
+
+  // التقييم الخارجي
+  const x = db.prepare(`SELECT COUNT(*) c, AVG(stars) a
+    FROM support_ratings WHERE staff_id = ? AND rated_at >= ? AND rated_at < ?`).get(userId, win.start, win.endExclusive);
+  if (x && x.c > 0) {
+    row.avgRating = Math.round(x.a * 100) / 100;
+    row.ratingCount = x.c;
+    row.ratingSource = 'external';
+  } else if (t && t.rated > 0) {
+    row.avgRating = Math.round(t.rating * 100) / 100;
+    row.ratingCount = t.rated;
+    row.ratingSource = 'tickets';
+  }
+
+  // إجراءات الإشراف
+  row.actions = db.prepare(`SELECT COUNT(*) c FROM mod_actions WHERE moderator_id = ? AND created_at >= ? AND created_at < ?`).get(userId, win.start, win.endExclusive)?.c || 0;
+
+  // الإنذارات
+  row.warnings = db.prepare(`SELECT COUNT(*) c FROM warnings WHERE user_id = ? AND voided_at IS NULL AND created_at >= ? AND created_at < ?`).get(userId, win.start, win.endExclusive)?.c || 0;
+
+  // الملاحظات
+  row.positiveNotes = db.prepare(`SELECT COUNT(*) c FROM staff_notes WHERE user_id = ? AND note_type = 'positive' AND created_at >= ? AND created_at < ?`).get(userId, win.start, win.endExclusive)?.c || 0;
+  row.negativeNotes = db.prepare(`SELECT COUNT(*) c FROM staff_notes WHERE user_id = ? AND note_type = 'negative' AND created_at >= ? AND created_at < ?`).get(userId, win.start, win.endExclusive)?.c || 0;
+
+  // الإجازات
+  const leaveRows = db.prepare(`SELECT start_date, end_date FROM leave_requests WHERE user_id = ? AND status IN ('approved', 'ended') AND start_date <= ? AND end_date >= ?`).all(userId, end, start);
+  for (const r of leaveRows) {
+    const from = r.start_date > start ? r.start_date : start;
+    const to = r.end_date < end ? r.end_date : end;
+    const span = clock.daysBetween(from, to);
+    if (span != null && span >= 0) {
+      row.leaveDays += span + 1;
+    }
+  }
+
+  return row;
 }
 
 /** ملخص فريق */
@@ -165,13 +234,25 @@ function team(teamKey, days = 30) {
   return members.map(m => individual(m, days, pre.get(String(m.user_id))));
 }
 
-/** ملخص قصير للوحة /me: اتجاه الأسبوع وسلسلة الأسابيع النشطة. */
+/** ملخص قصير للوحة /me: اتجاه الأسبوع وسلسلة الأسابيع النشطة (بالنقاط). */
 function personalTrend(staff) {
-  const currentRaw = score.monthlyRaw(staff.user_id, 7);
-  const previousRaw = score.monthlyRaw(staff.user_id, 7, 7);
-  const currentScore = score.compute(staff, currentRaw).score;
-  const previousScore = score.compute(staff, previousRaw).score;
+  const currentRaw = getRaw(staff.user_id, 7);
+  const previousRaw = getRaw(staff.user_id, 7, 7);
   const db = getDb();
+  const weekEnd = clock.today();
+  const weekStart = clock.addDays(weekEnd, -6);
+  const { start: curStart, endExclusive: curEnd } = clock.dayWindow(weekStart, weekEnd) || {};
+  const prevWeekEnd = clock.addDays(weekStart, -1);
+  const prevWeekStart = clock.addDays(prevWeekEnd, -6);
+  const { start: prevStart, endExclusive: prevEnd } = clock.dayWindow(prevWeekStart, prevWeekEnd) || {};
+
+  const currentPoints = curStart && curEnd
+    ? db.prepare(`SELECT COALESCE(SUM(points), 0) total FROM promotion_points WHERE user_id = ? AND rank_epoch = ? AND created_at >= ? AND created_at < ?`).get(staff.user_id, staff.rank_epoch ?? 0, curStart, curEnd).total
+    : 0;
+  const previousPoints = prevStart && prevEnd
+    ? db.prepare(`SELECT COALESCE(SUM(points), 0) total FROM promotion_points WHERE user_id = ? AND rank_epoch = ? AND created_at >= ? AND created_at < ?`).get(staff.user_id, staff.rank_epoch ?? 0, prevStart, prevEnd).total
+    : 0;
+
   let streak = 0;
   for (let week = 0; week < 12; week++) {
     const end = clock.addDays(clock.today(), -(week * 7));
@@ -181,94 +262,15 @@ function personalTrend(staff) {
     streak += 1;
   }
   return {
-    currentScore,
-    previousScore,
-    scoreDelta: currentScore - previousScore,
+    currentPoints,
+    previousPoints,
+    pointsDelta: currentPoints - previousPoints,
     currentActiveDays: currentRaw.activeDays,
     previousActiveDays: previousRaw.activeDays,
     streakWeeks: streak,
   };
 }
 
-/**
- * الترتيب — يستبعد Boss والمجازين والموقوفين والمستقيلين والخارجين.
- * من لم يسجّل حداً أدنى من المشاركة يُعرض في قائمة «غير مصنّفين» بدل منافسة
- * من يعمل فعلاً بميداليات (كان أي عضو بلا نشاط يحصل على 🥇 بدرجة 24).
- */
-const LEADERBOARD_MIN_ACTIVE_DAYS = 3;
-
-/** كل الصفات المستبعدة من الترتيب — معيار واحد مشترك مع bestOfMonth */
-const isRankable = (m, includeProbation) =>
-  ['support', 'moderation'].includes(m.team)
-  && !(m.team === 'support' && rankInfo('support', m.rank)?.level >= LEVELS.BOSS)
-  && !INACTIVE_STATUSES.includes(m.status)
-  && (includeProbation || m.status !== 'probation');
-
-function leaderboard(teamKey, days = 30, { includeProbation = false, pre = null } = {}) {
-  const members = staffService.all(teamKey ? { team: teamKey } : {});
-  const eligible = members.filter(m => isRankable(m, includeProbation));
-  // raw واحد لكل عضو بدل monthlyRaw لكل عضو: previously 7N statements.
-  const batch = pre || rawBatch(eligible.map(m => String(m.user_id)), days);
-  const scored = eligible.map(m => {
-    const r = individual(m, days, batch.get(String(m.user_id)));
-    const primary = m.team === 'support' ? r.raw.tickets : r.raw.actions;
-    const qualified = r.raw.activeDays >= LEADERBOARD_MIN_ACTIVE_DAYS || primary > 0;
-    return { ...r, primary, qualified };
-  });
-
-  const ranked = scored.filter(r => r.qualified).sort((a, b) => b.score - a.score || b.primary - a.primary);
-  const unranked = scored.filter(r => !r.qualified).sort((a, b) => b.raw.activeDays - a.raw.activeDays);
-  ranked.unranked = unranked; // يُقرأ في العرض دون كسر التوافق مع المستهلكين الحاليين
-  return ranked;
-}
-
-/**
- * ترتيب فريقين أو أكثر من **عبارة GROUP BY واحدة لكل جدول** لا 7N لكل فريق.
- *
- * team='all' في /leaderboard كان يبني الفريقين بالتتابع، فيجمع 7N لـ N لكل
- * فريق — أي 14Nk. leaderboardsAll يقبل قائمة الفرق ويعيد { key: rows } بنفس
- * عقد leaderboard، ويقرؤ المواد الخام مرة واحدة للكل.
- *
- * @param {string[]} teamKeys
- * @param {number} days
- * @param {{includeProbation?: boolean}} [opts]
- * @returns {Record<string, object[]>}
- */
-function leaderboardsAll(teamKeys, days = 30, { includeProbation = false } = {}) {
-  const keys = (teamKeys && teamKeys.length ? teamKeys : ['support', 'moderation']).map(String);
-  const members = keys.flatMap(key => staffService.all({ team: key }));
-  // نُرتّب قبل القراءة: الأعضاء غير المؤهَّلين للترتيب لا يحتاجون مواد خام،
-  // فقراءة واحدة لأقل عدد ممكن من الصفوف.
-  const eligible = members.filter(m => isRankable(m, includeProbation));
-  const batch = rawBatch(eligible.map(m => String(m.user_id)), days);
-  const out = {};
-  for (const key of keys) {
-    out[key] = leaderboard(key, days, { includeProbation, pre: batch });
-  }
-  return out;
-}
-
-/** أفضل إداري للشهر: يشترط حداً أدنى — لا جائزة لمن لم يعمل */
-const BEST_OF_MONTH_MIN_SCORE = 70;
-const BEST_OF_MONTH_MIN_WORK = 10;
-
-function bestOfMonth(rows) {
-  const withWork = rows.map(r => ({
-    ...r,
-    // تقارير الفريق لا تحتاج إلى أن يضيف المستدعي primary يدوياً؛ اشتقاقه هنا
-    // يمنع منح الجائزة لعضو بلا أي عنصر عمل فعلي.
-    primary: r.primary ?? (r.staff.team === 'support' ? r.raw.tickets : r.raw.actions),
-  }));
-  const eligible = withWork.filter(r => r.staff.rank !== 'Boss'
-    && !INACTIVE_STATUSES.includes(r.staff.status)
-    && r.staff.status !== 'probation'
-    && r.score >= BEST_OF_MONTH_MIN_SCORE
-    && r.primary >= BEST_OF_MONTH_MIN_WORK);
-  if (rows.length && !eligible.length) {
-    logger.warn(`لم يُمنح لقب أفضل إداري: لا أحد حقق الحد الأدنى (Score ${BEST_OF_MONTH_MIN_SCORE}+ و ${BEST_OF_MONTH_MIN_WORK} عنصر عمل)`);
-  }
-  return eligible.sort((a, b) => b.score - a.score || b.primary - a.primary)[0] || null;
-}
 
 /** التقرير اليومي */
 function daily() {
@@ -296,6 +298,5 @@ function lastSaved(type, period) {
 }
 
 module.exports = {
-  individual, team, personalTrend, leaderboard, leaderboardsAll, bestOfMonth, daily, save, lastSaved,
-  rawBatch, LEADERBOARD_MIN_ACTIVE_DAYS, BEST_OF_MONTH_MIN_SCORE, BEST_OF_MONTH_MIN_WORK,
+  individual, team, personalTrend, daily, save, lastSaved, rawBatch, getRaw,
 };

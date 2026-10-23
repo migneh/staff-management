@@ -6,8 +6,8 @@ const { test, describe, beforeEach } = require('node:test');
 const assert = require('node:assert');
 const { openMemoryDb, getDb } = require('../src/database');
 const activity = require('../src/services/activity');
-const score = require('../src/services/score');
 const promo = require('../src/services/promotions');
+const { pointsFor } = require('../src/services/points');
 const faq = require('../src/services/faq');
 const reports = require('../src/services/reports');
 const clock = require('../src/clock');
@@ -29,11 +29,42 @@ const PROMO_FAMILIES = {
   // إشراف: الإجراءات المعالجة، القرارات الخاطئة، سرعة «تقييم المشرف»، الأداء المستقر
   modTrial: { team: 'moderation', rank: 'Trial Moderator', sinceDays: 60 },
   modSenior: { team: 'moderation', rank: 'Moderator', sinceDays: 120 },
-  modAdmin: { team: 'moderation', rank: 'Admin', sinceDays: 210, actions: 65, savedScore: 80 },
+  modAdmin: { team: 'moderation', rank: 'Admin', sinceDays: 210, actions: 65, savedPoints: 80 },
   // دعم: الرسائل، تقييم العملاء، سرعة «متوسط التكتات»، تقييم المشرف
   supExpert: { team: 'support', rank: 'Support', sinceDays: 120 },
   supHelper: { team: 'support', rank: 'Helper', sinceDays: 90 },
 };
+
+// رصيد نقاط يجتاز بوابة «نقاط الترقية» في كل عائلة. القيمة هي عتبة الرتبة
+// الحالية في POINTS_THRESHOLDS بالضبط — لأن البوابة `>=` لا `>`، فلا حاجة
+// لفارق. Admin عتبة مقدَّرة 1500 → Head Of Moderators (6 أشهر، إدارة).
+const PROMO_SEED_POINTS = {
+  'Trial Moderator': 200,   // → Moderator
+  'Moderator': 550,         // → Senior Moderator
+  'Admin': 1500,            // → Head Of Moderators (estimated, matches constants.js)
+  'Support': 500,           // → Support Expert
+  'Helper': 200,            // → Support
+};
+
+/**
+ * يزرع صفوف promotion_points برصيد معلوم — أداة تثبيت لا مسار منح حقيقي.
+ *
+ * الإدراج المباشر لا عبر points.add لأن المطلوب رصيدٌ معروف بعبارة واحدة:
+ * points.add يفرض سقف chat_help اليومي وحماية المرجع الفريد، فيصير زرع
+ * 550 نقطة اختباراً للسقف لا لبوابة الترقية. البوابة تقرأ SUM على العصر
+ * الحالي (points.getBalance)، وهذا هو بالضبط ما تكتبه هذه الصفوف.
+ * rank_epoch مطابق لعمود العضو (0 للمُزرَع جديداً)، وإلا حُسب الرصيد على
+ * عصرٍ لا يطابق العضو فقرأت البوابة صفراً.
+ */
+function seedLedger(id, rank, amount) {
+  const db = getDb();
+  const perRow = pointsFor('faq_contrib'); // سبب بلا سقف يومي — لا يتداخل مع الزرع
+  const rows = Math.floor(amount / perRow);
+  const stmt = db.prepare(`INSERT INTO promotion_points (user_id, points, reason_key, reason, ref_type, ref_id, rank_epoch)
+    VALUES (?, ?, 'faq_contrib', 'رصيد مُزرَع للاختبار', 'seed', ?, 0)`);
+  for (let k = 0; k < rows; k++) stmt.run(id, perRow, `${id}_seed${k}`);
+  db.prepare('UPDATE staff_members SET rank_epoch = 0 WHERE user_id = ?').run(id);
+}
 
 /**
  * يزرع عضواً ومادّة شروط ترقيته كاملة — القيم الافتراضية تجتز كل بوابات عائلته.
@@ -50,13 +81,17 @@ function seedPromoMember(family, overrides = {}, id = `gate_${family}`) {
     status: 'active', activeDays: 28, rowsPerDay: 6,
     actions: 60, seriousActions: null, responseSpeed: 25, warnings: 0, negativeNotes: 0,
     tickets: 50, duration: 4, ratingCount: 5, stars: 5,
-    teamInteraction: 25, supervisorRating: 20, savedScore: null,
+    teamInteraction: 25, supervisorRating: 20, savedPoints: null,
     ...PROMO_FAMILIES[family], ...overrides,
   };
   const db = getDb();
   const since = clock.addDays(clock.today(), -cfg.sinceDays);
   db.prepare(`INSERT INTO staff_members (user_id, username, team, rank, status, joined_at, rank_since) VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .run(id, id, cfg.team, cfg.rank, cfg.status, since, since);
+
+  // رصيد النقاط قبل زرع بقية المادّة: `seedPoints` في overrides يفسد مادّة
+  // بوابة النقاط وحدها (0 = لا رصيد)، وغيابه يزرع عتبة رتبة العضو.
+  seedLedger(id, cfg.rank, 'seedPoints' in cfg ? cfg.seedPoints : (PROMO_SEED_POINTS[cfg.rank] ?? 0));
 
   const activity = db.prepare(`INSERT INTO activity_logs (user_id, channel_id, channel_type, weight, day) VALUES (?, '1', 'staff', 0.25, ?)`);
   for (let d = 0; d < cfg.activeDays; d++) {
@@ -90,10 +125,10 @@ function seedPromoMember(family, overrides = {}, id = `gate_${family}`) {
   const note = db.prepare(`INSERT INTO staff_notes (user_id, note_type, content, added_by) VALUES (?, 'negative', 'قرار خاطئ', 'mgr')`);
   for (let k = 0; k < cfg.negativeNotes; k++) note.run(id);
 
-  if (cfg.savedScore != null) {
+  if (cfg.savedPoints != null) {
     const period = `${clock.today().slice(0, 7)}:${cfg.team}`;
     db.prepare(`INSERT INTO saved_reports (report_type, period, data) VALUES ('monthly', ?, ?)`)
-      .run(period, JSON.stringify({ members: [{ user: id, score: cfg.savedScore, rank: cfg.rank }] }));
+      .run(period, JSON.stringify({ members: [{ user: id, points: cfg.savedPoints, rank: cfg.rank }] }));
   }
 
   return db.prepare('SELECT * FROM staff_members WHERE user_id = ?').get(id);
@@ -108,7 +143,7 @@ const matchGate = (label, spec) => label.includes(spec.gate) && (!spec.gateNot |
 /** حالات الفشل المستقلة: كل حالة تُفسد مادّة بوابة واحدة فقط */
 const PROMO_GATE_CASES = [
   { gate: 'مدة الخدمة بالرتبة', family: 'modTrial', bad: { sinceDays: 10 } },
-  { gate: 'تقييم الأداء Score', family: 'modTrial', bad: { actions: 20, activeDays: 18, responseSpeed: 1 } },
+  { gate: 'نقاط الترقية', family: 'modTrial', bad: { seedPoints: 0 } },
   { gate: 'الرسائل', family: 'supExpert', bad: { rowsPerDay: 2 } },
   { gate: 'تقييم العملاء', family: 'supExpert', bad: { stars: 3 } },
   { gate: 'تقييم المشرف', family: 'supHelper', bad: { supervisorRating: null } },
@@ -123,7 +158,7 @@ const PROMO_GATE_CASES = [
   { name: 'سرعة الاستجابة (تقييم المشرف)', gate: 'سرعة الاستجابة (تقييم المشرف)', family: 'modSenior', bad: { responseSpeed: 10 } },
   { name: 'سرعة الاستجابة (متوسط التكتات)', gate: 'سرعة الاستجابة', gateNot: 'تقييم المشرف', family: 'supExpert', bad: { duration: 120 } },
   { gate: 'القرارات الخاطئة', family: 'modTrial', bad: { negativeNotes: 1 } },
-  { gate: 'الأداء المستقر', family: 'modAdmin', bad: { savedScore: 50 } },
+  { gate: 'الأداء المستقر', family: 'modAdmin', bad: { savedPoints: 50 } },
   { gate: 'الحالة', family: 'modTrial', bad: { status: 'on_leave' } },
 ];
 
@@ -151,52 +186,39 @@ describe('فلتر السبام', () => {
   });
 });
 
-describe('Score', () => {
-  test('Helper يُحسب بدون تكتات، والتقييم الغائب لا يمنح نقاطاً مجانية', () => {
-    const s = seedStaff('h1', 'support', 'Helper');
-    const r = score.compute(s, { messages: 200, activeDays: 26, tickets: 0 });
-    assert.equal(r.factors.length, 4);
-    assert.equal(r.factors[0].pts, 25);
-    assert.equal(r.factors[1].pts, 25);
-    // تفاعل الفريق وتقييم المشرف غير مُقيَّمين: وزنهما (50) خارج المقام
-    assert.equal(r.assessedMax, 50);
-    assert.equal(r.factors[2].assessed, false);
-    assert.equal(r.factors[3].assessed, false);
-    assert.equal(r.score, 100); // (25+25) / 50
-    // عند وجود تقييم مشرف يحتسب مقامه ويُنقص النسبة فعلياً
-    // التقييمات البشرية على سلم 5-25 (كما في قاعدة البيانات)، فيدخل وزنها في المقام
-    const rated = score.compute({ ...s, supervisor_rating: 20 }, { messages: 200, activeDays: 26, tickets: 0 });
-    assert.equal(rated.assessedMax, 75);
-    assert.equal(rated.score, Math.round(((25 + 25 + 20) / 75) * 100));
-  });
-  test('Support يُحسب بالتكتات والسرعة', () => {
-    const s = seedStaff('s1', 'support', 'Support');
-    const r = score.compute(s, { messages: 150, activeDays: 21, tickets: 50, avgDuration: 4, avgRating: 4.6 });
-    assert.equal(r.score, 30 + 25 + 20 + 16);
-    assert.equal(score.grade(r.score), 'ممتاز');
-  });
-  test('الإشراف يُحسب بالمخالفات، وسرعة الاستجابة غير المُقيَّمة تُستثنى من المقام', () => {
-    const s = seedStaff('m1', 'moderation', 'Moderator');
-    const r = score.compute(s, { messages: 10, activeDays: 5, actions: 60 });
-    assert.equal(r.factors[0].pts, 30);
-    assert.equal(r.factors[1].assessed, false); // response_speed فارغ
-    assert.equal(r.assessedMax, 75);            // 30 + 25 + 20
-    assert.equal(r.score, Math.round(((30 + 5 + 4) / 75) * 100)); // = 52
+describe('نظام النقاط', () => {
+  test('تقييم الترقية يعيد النقاط والرتبة دون حقول Score القديمة', () => {
+    const staff = seedStaff('points-payload', 'moderation', 'Trial Moderator');
+    const evaluation = promo.evaluate(staff);
+    assert.equal(typeof evaluation.points, 'number');
+    assert.equal(evaluation.rank, staff.rank);
+    assert.equal('score' in evaluation, false);
+    assert.equal('grade' in evaluation, false);
   });
 });
 
 describe('الترقيات', () => {
   test('يقيّم كل الشروط بدقة', () => {
+    openMemoryDb();
     const s = seedStaff('t1', 'moderation', 'Trial Moderator', { since: '2025-01-01 00:00:00' });
     let ev = promo.evaluate(s);
     assert.equal(ev.rule.to, 'Moderator');
     assert.equal(ev.eligible, false);
     const db = getDb();
     for (let k = 0; k < 60; k++) db.prepare(`INSERT INTO mod_actions (moderator_id, target_id, action_type, reason) VALUES (?, 'x', 'warn', 'r')`).run('t1');
-    for (let k = 0; k < 200; k++) db.prepare(`INSERT INTO activity_logs (user_id, channel_id, channel_type, weight, day) VALUES ('t1', '1', 'staff', 0.25, ?)`).run(`2026-09-${String((k % 28) + 1).padStart(2, '0')}`);
+    // النشاط داخل نافذة الـScore الحالية (28 يوماً) — clock.today() نافذة 30 يوماً
+    for (let d = 0; d < 28; d++) {
+      const day = clock.addDays(clock.today(), -d);
+      for (let k = 0; k < 7; k++) db.prepare(`INSERT INTO activity_logs (user_id, channel_id, channel_type, weight, day) VALUES ('t1', '1', 'staff', 0.25, ?)`).run(day);
+    }
     db.prepare(`UPDATE staff_members SET response_speed = 25 WHERE user_id = 't1'`).run();
-    ev = promo.evaluate(s);
-    assert.ok(ev.score >= 60, `score ${ev.score}`);
+    // إعادة قراءة العضو لالتقاط response_speed المحدث
+    const s2 = db.prepare('SELECT * FROM staff_members WHERE user_id = ?').get('t1');
+    // Seed 200 points for Trial Moderator (threshold) so points gate passes
+    const stmt = db.prepare(`INSERT INTO promotion_points (user_id, points, reason_key, reason, ref_type, ref_id, rank_epoch) VALUES ('t1', 5, 'faq_contrib', 'قاعدة المعرفة', 'faq', ?, 0)`);
+    for (let k = 0; k < 40; k++) stmt.run(`t1_faq_${k}`);
+    ev = promo.evaluate(s2);
+    assert.ok(ev.points >= 200, `points ${ev.points}`);
     assert.equal(ev.eligible, true, JSON.stringify(ev.checks));
     // إنذار رسمي يمنع الترقية
     db.prepare(`INSERT INTO warnings (user_id, warning_type, reason, issued_by) VALUES ('t1', 'first', 'r', 'b')`).run();
@@ -345,31 +367,62 @@ describe('دورة الإجازات والاستقالات', () => {
 });
 
 describe('التقارير والـ Leaderboard', () => {
-  test('جائزة الشهر لا تُمنح بلا عمل أو أثناء الإجازة', () => {
-    const rows = [
-      { staff: { user_id: 'idle', team: 'support', rank: 'Support', status: 'active' }, score: 95, raw: { tickets: 0 } },
-      { staff: { user_id: 'working', team: 'support', rank: 'Support', status: 'active' }, score: 80, raw: { tickets: 10 } },
-      { staff: { user_id: 'leave', team: 'support', rank: 'Support', status: 'on_leave' }, score: 100, raw: { tickets: 50 } },
-    ];
-    assert.equal(reports.bestOfMonth(rows).staff.user_id, 'working');
+  test('points.leaderboard يعيد الأعضاء مرتبةً تنازلياً حسب النقاط الإجمالية', () => {
+    const points = require('../src/services/points');
+    // زرع أعضاء مع نقاط
+    seedStaff('p1', 'support', 'Support');
+    seedStaff('p2', 'support', 'Support');
+    seedStaff('p3', 'support', 'Support', { status: 'on_leave' });
+    seedStaff('p4', 'moderation', 'Admin');
+
+    // إضافة نقاط عبر promotion_points
+    const db = getDb();
+    db.prepare(`INSERT INTO promotion_points (user_id, points, reason_key, reason, ref_type, ref_id, rank_epoch) VALUES (?, ?, 'test', 'test', 'seed', ?, 0)`).run('p1', 100, 'p1_seed');
+    db.prepare(`INSERT INTO promotion_points (user_id, points, reason_key, reason, ref_type, ref_id, rank_epoch) VALUES (?, ?, 'test', 'test', 'seed', ?, 0)`).run('p2', 200, 'p2_seed');
+    db.prepare(`INSERT INTO promotion_points (user_id, points, reason_key, reason, ref_type, ref_id, rank_epoch) VALUES (?, ?, 'test', 'test', 'seed', ?, 0)`).run('p3', 50, 'p3_seed');
+
+    const lb = points.leaderboard({ team: 'support', limit: 20 });
+    assert.equal(lb.length, 3); // p3 has points but is on_leave, still shows
+    assert.equal(lb[0].user_id, 'p2');
+    assert.equal(lb[0].total, 200);
+    assert.equal(lb[1].user_id, 'p1');
+    assert.equal(lb[1].total, 100);
+    assert.equal(lb[2].user_id, 'p3');
+    assert.equal(lb[2].total, 50);
   });
 
-  test('يستبعد Boss والمجازين', () => {
-    seedStaff('b', 'support', 'Boss');
-    seedStaff('l', 'support', 'Support', { status: 'on_leave' });
-    seedStaff('s', 'support', 'Support');
-    seedStaff('m', 'moderation', 'Admin');
-    // بلا نشاط: لا أحد مؤهل للترتيب، والجميع في قائمة «غير مصنّف» بدل ظهورهم بأرقام وهمية
-    const lb = reports.leaderboard('support');
-    assert.deepEqual(lb.map(r => r.staff.user_id), []);
-    assert.deepEqual(lb.unranked.map(r => r.staff.user_id), ['s']);
-    assert.equal(reports.leaderboard().length, 0);
-    assert.equal(reports.leaderboard().unranked.length, 2);
-    // بعد نشاط حقيقي يظهر في الترتيب
-    for (let k = 0; k < 8; k++) getDb().prepare(`INSERT INTO activity_logs (user_id, channel_id, channel_type, weight, day) VALUES ('s', '1', 'staff', 0.25, ?)`).run(`2026-09-0${k + 1}`);
-    const after = reports.leaderboard('support');
-    assert.deepEqual(after.map(r => r.staff.user_id), ['s']);
-    assert.equal(after[0].qualified, true);
+  test('points.leaderboard يستبعد المستقيلين ويصفّي حسب الفريق', () => {
+    const points = require('../src/services/points');
+    seedStaff('r1', 'support', 'Support');
+    seedStaff('r2', 'support', 'Support', { status: 'resigned' });
+    seedStaff('r3', 'moderation', 'Admin');
+
+    const db = getDb();
+    db.prepare(`INSERT INTO promotion_points (user_id, points, reason_key, reason, ref_type, ref_id, rank_epoch) VALUES (?, ?, 'test', 'test', 'seed', ?, 0)`).run('r1', 150, 'r1_seed');
+    db.prepare(`INSERT INTO promotion_points (user_id, points, reason_key, reason, ref_type, ref_id, rank_epoch) VALUES (?, ?, 'test', 'test', 'seed', ?, 0)`).run('r2', 300, 'r2_seed');
+    db.prepare(`INSERT INTO promotion_points (user_id, points, reason_key, reason, ref_type, ref_id, rank_epoch) VALUES (?, ?, 'test', 'test', 'seed', ?, 0)`).run('r3', 100, 'r3_seed');
+
+    // فريق support: يجب أن يظهر r1 فقط (r2 مستقيل)
+    const lbSupport = points.leaderboard({ team: 'support', limit: 20 });
+    assert.equal(lbSupport.length, 1);
+    assert.equal(lbSupport[0].user_id, 'r1');
+
+    // فريق moderation: يظهر r3
+    const lbMod = points.leaderboard({ team: 'moderation', limit: 20 });
+    assert.equal(lbMod.length, 1);
+    assert.equal(lbMod[0].user_id, 'r3');
+
+    // بدون فريق: يظهر كلاهما
+    const lbAll = points.leaderboard({ team: null, limit: 20 });
+    assert.equal(lbAll.length, 2);
+  });
+
+  test('reports.daily يعيد إحصائيات يومية صحيحة', () => {
+    seedStaff('d1', 'support', 'Support');
+    seedStaff('d2', 'support', 'Support', { status: 'on_leave' });
+    seedStaff('d3', 'moderation', 'Admin');
+    seedStaff('d4', 'support', 'Support', { status: 'inactive' });
+
     const d = reports.daily();
     assert.equal(d.total, 4);
     assert.equal(d.onLeave, 1);
@@ -445,8 +498,8 @@ describe('استيراد سجل التكتات الخارجي', () => {
     assert.equal(parsed.closer, '1442619466973980735');
     const first = ticketLogs.recordTicket(parsed);
     assert.equal(first.duplicate, false);
-    // لا سجل نقاط بعد: التستدعاء يسجّل القياس فقط ويمنع التكرار بمصدره.
-    assert.equal(first.earned, undefined);
+    // المستخدم القفل غير مسجل كإداري، فلا تمنح نقاط (ok: false)
+    assert.equal(first.earned, 0);
     // المدة تُحلل إلى دقائق ولو جاءت بصيغة ساعة:دقيقة
     assert.equal(ticketLogs.parseDuration('01:23'), 83);
     assert.equal(ticketLogs.parseDuration('00:07:30'), 8);

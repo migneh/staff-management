@@ -183,7 +183,6 @@ const COMPONENT_ACCESS = {
   'appeal:reject': { level: LEVELS.MANAGEMENT, guarded: true },
   'recognition:approve': { level: LEVELS.MANAGEMENT, guarded: true },
   'recognition:reject': { level: LEVELS.MANAGEMENT, guarded: true },
-  'score:weightsmodal': { level: LEVELS.BOSS, guarded: true }, // يطابق شرط أمر /score-weights set (كان MANAGEMENT فقط)
   'task:page': { level: LEVELS.STAFF, owner: 'self' },
   'task:complete': { level: LEVELS.STAFF, owner: 'self' },
 

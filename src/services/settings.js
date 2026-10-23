@@ -8,7 +8,7 @@ const fileConfig = require('../config');
 const logger = require('../logger').log('settings');
 const {
   SUPPORT_RANKS, MOD_RANKS, GENERAL_MANAGEMENT_RANKS, LEAVE_GLOBAL, LEAVE_RULES, RESIGNATION_GLOBAL, VACATION_ROLE_TIMING,
-  CHANNEL_KEYS, OPTIONAL_CHANNEL_KEYS, CHANNEL_META, SCORE_WEIGHTS,
+  CHANNEL_KEYS, OPTIONAL_CHANNEL_KEYS, CHANNEL_META,
 } = require('../constants');
 
 let cache = null;
@@ -62,7 +62,6 @@ function load() {
       cache.roles[team][rank] = v;
     } else if (group === 'channel') cache.channels[name] = v;
     else if (group === 'activity') cache.activityChannels[name] = v;
-    else if (group === 'scoreWeights') { cache.scoreWeights ||= {}; cache.scoreWeights[name] = v; }
     else if (group === 'featureToggles') {
       // الصف كان يُكتب ثم يُسقَط عند القراءة: لا فرع في load يطابق 'featureToggles'
       // فلا تُحفظ أي حالة أصلاً، وكل مفتاح كان يُقرأ افتراضه دائماً.
@@ -145,41 +144,6 @@ function resetFeatureToggles() {
   ensureTable();
   getDb().prepare('DELETE FROM settings WHERE key = ?').run('featureToggles');
   cache = null;
-}
-
-// ===== أوزان Score (تُضبط من /score-weights وتُقصّ على ثوابت constants) =====
-/** أوزان فريق مع Defaults من constants، مدمجةً مع أي تعديل محفوظ. */
-function scoreWeights(team) {
-  const base = SCORE_WEIGHTS[team] || {};
-  const custom = load().scoreWeights?.[team];
-  return custom && typeof custom === 'object' ? { ...base, ...custom } : { ...base };
-}
-
-/**
- * حفظ أوزان فريق. مجموع الأوزان يجب أن يساوي 100 وإلا فالترتيب غير قابل للمقارنة —
- * نرفض بدل أن نخزن مجموعة تجعل المقارنة بين فريقين بلا معنى.
- * @returns {{ok:boolean, error?:string, weights?:object}}
- */
-function setScoreWeights(team, values) {
-  const base = SCORE_WEIGHTS[team];
-  if (!base) return { ok: false, error: `فريق غير معروف: ${team}` };
-
-  const keys = Object.keys(base);
-  const weights = {};
-  for (const k of keys) {
-    const v = Number(values?.[k]);
-    if (!Number.isFinite(v) || v < 0) return { ok: false, error: `وزن غير صالح لـ ${k}` };
-    weights[k] = v;
-  }
-  // أي مفتاح زائد لا يغيّر المقام — نرفضه صراحةً بدل تجاهله بصمت.
-  const extra = Object.keys(values || {}).filter(k => !keys.includes(k));
-  if (extra.length) return { ok: false, error: `مفاتيح غير معروفة: ${extra.join(', ')}` };
-
-  const total = keys.reduce((sum, k) => sum + weights[k], 0);
-  if (Math.round(total) !== 100) return { ok: false, error: `مجموع الأوزان ${total} — يجب أن يساوي 100` };
-
-  set(`scoreWeights.${team}`, weights);
-  return { ok: true, weights };
 }
 
 // ===== سياسات الطلبات (تُضبط من /setup وتُفضَّل على config.json) =====
@@ -287,5 +251,4 @@ module.exports = {
   policy, setPolicy, resetPolicy, leavePolicy, resignationPolicy, VACATION_ROLE_TIMING,
   CHANNEL_KEYS, OPTIONAL_CHANNEL_KEYS, CHANNEL_META,
   featureToggle, setFeatureToggle, resetFeatureToggles, FEATURE_TOGGLES, FEATURE_TOGGLES_DEFAULTS, isFeatureToggle,
-  scoreWeights, setScoreWeights,
 };

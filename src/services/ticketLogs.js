@@ -2,6 +2,7 @@
 const { getDb } = require('../database');
 const logger = require('../logger').log('ticket-logs');
 const settings = require('./settings');
+const points = require('./points');
 
 const ID_RE = /^\d{15,22}$/;
 
@@ -174,7 +175,25 @@ const result = db.prepare(`INSERT INTO ticket_metrics
    .run(ticket.ticketId, ticket.owner, ticket.claimer, ticket.closer || ticket.claimer, ticket.rating, ticket.duration,
      ticket.durationSource || (ticket.duration == null ? null : 'reported'), ticket.claimedAt || null, ticket.loggedBy,
      reopened, ticket.source, ticket.sourceMessageId || null, ticket.sourceChannelId || null, ticket.sourceUrl || null, ticket.ticketUrl || null);
-   return { duplicate: false, row: { id: Number(result.lastInsertRowid), ...ticket, reopened }, reopened: !!reopened, existing };
+
+  // منح النقاط بعد التسجيل الناجح
+  const closerId = ticket.closer || ticket.claimer;
+  let earned = 0;
+  const addResult = points.add({ userId: closerId, reasonKey: 'ticket_close', refType: 'ticket', refId: ticket.ticketId, addedBy: ticket.loggedBy });
+  if (addResult.ok) earned += addResult.points;
+
+  // نقاط التقييم: 4-5 = إيجابية، 1-2 = سلبية
+  if (ticket.rating != null) {
+    if (ticket.rating >= 4) {
+      const r = points.add({ userId: closerId, reasonKey: 'rating_positive', refType: 'ticket', refId: `${ticket.ticketId}_rating`, addedBy: ticket.loggedBy });
+      if (r.ok) earned += r.points;
+    } else if (ticket.rating <= 2) {
+      const r = points.add({ userId: closerId, reasonKey: 'rating_negative', refType: 'ticket', refId: `${ticket.ticketId}_rating`, addedBy: ticket.loggedBy });
+      if (r.ok) earned += r.points;
+    }
+  }
+
+  return { duplicate: false, row: { id: Number(result.lastInsertRowid), ...ticket, reopened }, reopened: !!reopened, existing, earned };
 }
 
 module.exports = {

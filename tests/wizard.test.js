@@ -9,6 +9,7 @@ const { openMemoryDb, getDb } = require('../src/database');
 const settings = require('../src/services/settings');
 const forms = require('../src/ui/forms');
 const wizard = require('../src/commands/wizard');
+const logging = require('../src/commands/logging');
 const { commands, resolveComponent } = require('../src/commands');
 const { dispatch } = require('../src/services/componentDispatch');
 const { LEVELS, FAQ_CATEGORIES } = require('../src/constants');
@@ -45,13 +46,19 @@ const legacy = (id, title, fields) => {
 const input = (id, label, { value = '', required = true, max = 100, long = false } = {}) => new TextInputBuilder()
   .setCustomId(id).setLabel(label).setStyle(long ? TextInputStyle.Paragraph : TextInputStyle.Short).setMaxLength(max).setRequired(required).setValue(value);
 
+test('يرفض تسجيل التكت اليدوي بمعرّف غير صالح قبل إنشاء سجل', async () => {
+  const i = interaction({ customId: 'ticket:log:auto', texts: { ticket_id: 'not-a-ticket', owner: IDS.target } });
+  await logging.components['ticket:log'](i);
+  assert.match(i.payload.embeds[0].toJSON().description, /رقم التكت غير صحيح/);
+  assert.equal(getDb().prepare('SELECT COUNT(*) c FROM ticket_metrics').get().c, 0);
+});
+
 test('كل نموذج مُحوَّل إلى Label يحمل وصفاً مفيداً ولا يتجاوز حدود Discord', () => {
   const samples = [
     legacy('leave:modal:normal', 'طلب إجازة', [input('reason', 'السبب (إجباري)', { long: true, max: 500 }), input('start', 'البداية YYYY-MM-DD', { max: 10 }), input('end', 'النهاية YYYY-MM-DD', { max: 10 }), input('attachment', 'رابط مرفق (اختياري)', { required: false })]),
     legacy('resign:acceptmodal:3', 'قبول', [input('reason', 'رسالة وداع (اختياري)', { required: false, long: true }), input('exit_interview', 'ملاحظة مقابلة الخروج — اختياري', { required: false, long: true })]),
     legacy('faq:editmodal:2', 'تعديل المدخل', [input('title', 'العنوان'), input('content', 'المحتوى', { long: true, max: 4000 }), input('category', 'رقم التصنيف (1-11)', { max: 2, value: '4' }), input('important', 'مهم؟ (نعم/لا)', { required: false, value: 'نعم' })]),
     legacy('faq:template-addmodal', 'قالب', [input('name', 'اسم القالب (داخلي)'), input('title', 'عنوان اللوحة'), input('description', 'وصف اللوحة', { required: false, long: true }), input('categories', 'التصنيفات: all أو أرقام', { required: false, value: '1,3' }), input('color', 'لون #RRGGBB وملاحظة (اختياري)', { required: false, value: '#5865F2' })]),
-    legacy('score:weightsmodal:support', 'أوزان Score', [input('tickets', 'التكتات (من 100)', { max: 3, value: '30' }), input('speed', 'السرعة (من 100)', { max: 3, value: '25' })]),
     legacy('setup:policies-leave-modal', 'سياسات الإجازات', [input('maxConcurrent', 'الحد الأقصى للمجازين معاً', { max: 2, value: '3' }), input('maxDays', 'أطول إجازة (أيام)', { max: 3, value: '30' })]),
     legacy('ticket:log:auto', 'تسجيل تكت', [input('ticket_id', 'رقم التكت', { max: 40, value: 'ticket-9' }), input('duration', 'المدة — اختياري', { required: false, max: 30 })]),
   ];

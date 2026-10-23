@@ -230,7 +230,8 @@ describe('عقد مهام المجدول والتبديل', () => {
     assert.ok(!/week_above_80/.test(SCHEDULER_SRC), 'مكافأة أسبوعية عادت');
     assert.ok(!/if \(sc >= 80\)/.test(SCHEDULER_SRC), 'الفرع الميت عاد');
     assert.ok(!/best_of_month/.test(SCHEDULER_SRC), 'مكافأة الشهر عادت');
-    // منطق المراجعة البشرية باقٍ: sc < 50 فقط
-    assert.ok(/if \(sc < 50\) below\.push/.test(SCHEDULER_SRC), 'قائمة المراجعة الأسبوعية تغيّرت');
+    // المراجعة البشرية تفرز من لم يكسب نقاطاً في نافذة الأسبوع، بلا خصم تلقائي.
+    assert.ok(/pointsEarned: 0/.test(SCHEDULER_SRC), 'عقد قائمة المراجعة بالنقاط تغيّر');
+    assert.ok(/pointsEarned: \$\{r\.pointsEarned\}/.test(SCHEDULER_SRC), 'عرض نقاط الأسبوع مفقود');
   });
 });

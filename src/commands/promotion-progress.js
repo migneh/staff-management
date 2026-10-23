@@ -4,7 +4,7 @@ const { LEVELS, TEAMS, STATUS } = require('../constants');
 const settings = require('../services/settings');
 const staffService = require('../services/staff');
 const promotions = require('../services/promotions');
-const score = require('../services/score');
+const points = require('../services/points');
 const clock = require('../clock');
 const { embed, COLORS, replyEphemeral, arDigits, progressBar, tsRelative, tsDate } = require('../utils');
 const kit = require('../ui/kit');
@@ -59,12 +59,15 @@ module.exports = {
         }).join('\n');
         
         // Build embed
+        const totalPoints = points.getBalance(userId);
+        const pointsThreshold = promoEval.rule ? require('../constants').POINTS_THRESHOLDS[member.team]?.[member.rank] : 0;
+
         const e = kit.card({
           title: `📈 تقدم الترقية: ${member.rank} → ${rule.to}`,
           description: `المتطلبات المكتملة: **${passedChecks}/${totalChecks}** (${progressPercent}%)`,
           fields: [
             { name: '⏱️ الوقت في الرتبة', value: `${arDigits(monthsInRank.toFixed(1))} شهر / ${rule.months} شهر` },
-            { name: '📈 التقييم (Score)', value: `${score.compute(member).score}/100` },
+            { name: '💯 نقاط الترقية', value: `**${arDigits(totalPoints)}** / ${arDigits(pointsThreshold || '—')}` },
             { name: '📋 متطلبات الترقية', value: requirementDetails.slice(0, 1024) },
           ],
           color: promoEval.eligible ? COLORS.success : COLORS.warning,

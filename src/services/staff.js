@@ -124,7 +124,7 @@ function rankHistory(userId, limit = 20) {
 }
 
 /** تغيير رتبة العضو مع تحديث الحالة والتاريخ */
-function setRank(userId, team, rank, { actorId = null, reason = null, changeType = null } = {}) {
+function setRank(userId, team, rank, { actorId = null, reason = null, changeType = null, newEpoch = false } = {}) {
   const before = get(userId);
   const fromRank = before?.rank || null;
   const type = changeType || (before && fromRank !== rank ? (rankIndexOf(team, rank) >= rankIndexOf(before.team, fromRank) ? 'promote' : 'demote') : 'reassign');
@@ -132,6 +132,27 @@ function setRank(userId, team, rank, { actorId = null, reason = null, changeType
   // السجل والتحديث في معاملة واحدة: لا رتبة جديدة بلا سند موثّق، ولا سند بلا تغيّر.
   const db = getDb();
   const applied = db.transaction(() => {
+    // newEpoch: بدء عصر نقاط جديد — الترقية تصفّر الرصيد بلا حذف سجل.
+    //
+    // لماذا لا DELETE من promotion_points: الصفوف القديمة هي سجل الفترة
+    // السابقة، وحذفها يُفقد «كم كان رصيده قبل الترقية». العصر يتقدّم، فتصير
+    // كل صفوف الماضي خارج نطاق الرصيد المحسوب على العصر الحالي — وهذا هو
+    // التصفير نفسه بلا فقدان تاريخ.
+    //
+    // لماذا هنا داخل المعاملة لا قبلها أو بعدها: الرتبة والعصر معلومتان عن
+    // نفس الحدث. عصرٌ يُزاح والرتبة لا تتغير (أو العكس) يترك العضو في حالة
+    // لا يعبّر عنها أي سجل — ورصيدٌ محسوب على عصرٍ لا تطابق رتبته. الإزاحة
+    // الناقصة تُلغى مع بقية المعاملة، فلا يبقى نصف ترقية.
+    //
+    // لماذا (+ 1) لا قيمة مطلقة: العصر عدّاد تراكمي للفترات، لا رقم نسخة —
+    // الإزاحة النسبية تتحمل أي تصحيح يدوي سابق على العمود.
+    //
+    // لا require لخدمة النقاط هنا: الحساب عدّاد على عمود، والقراءة وحدها
+    // تعرف معنى العصر. الاستيراد يزيد تبعية بين خدمتين مقابل سطر UPDATE.
+    if (newEpoch) {
+      db.prepare(`UPDATE staff_members SET rank_epoch = COALESCE(rank_epoch, 0) + 1, updated_at = ? WHERE user_id = ?`)
+        .run(nowIso(), userId);
+    }
     db.prepare(`UPDATE staff_members SET team = ?, rank = ?, rank_since = ?, status = 'active', updated_at = ? WHERE user_id = ?`)
       .run(team, rank, nowIso(), nowIso(), userId);
     appendRankChange({ userId, team, fromRank, toRank: rank, changeType: type, reason, actorId });

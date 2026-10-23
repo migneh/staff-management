@@ -31,7 +31,7 @@ const MOD_RANKS = [
   { name: 'Head Of Moderators', category: 'إدارة عليا', level: LEVELS.MANAGEMENT, perms: 'كل ما سبق + إدارة الفريق' },
 ];
 
-// الإدارة العامة فريق مستقل: لا توجد له ترقيات تلقائية أو شروط Score.
+// الإدارة العامة فريق مستقل: لا توجد له ترقيات تلقائية.
 // تعيين الرتبتين يتم فقط عبر Server Manager أو General Manager الحالي.
 const GENERAL_MANAGEMENT_RANKS = [
   { name: 'Co General Manager', category: 'إدارة عامة', level: LEVELS.GENERAL_MANAGEMENT, handlesTickets: false, promotable: false },
@@ -206,7 +206,7 @@ const RECOGNITION = {
 // approvals: عدد الموافقات المستقلة المطلوبة (نصاب) — مطابق لما هو معلن للفريق
 // windowDays: نافذة احتساب التكتات/المخالفات/التقييم/التواجد (بالأيام)
 // warnWindowDays: نافذة احتساب الإنذارات الرسمية
-// stableMonths/stableMinScore: «أداء مستقر» عبر تقارير شهرية محفوظة
+// stableMonths/stableMinPoints: «أداء مستقر» عبر تقارير شهرية محفوظة
 // maxWrongDecisions: أقصى عدد قرارات خاطئة مسجّلة في النافذة
 // requiresSupervisorRating: يشترط تقييم مشرف حديث (خلال 90 يوم)
 // requiresConflictResolution: يشترط 3 إجراءات جادّة (تحذير/تايم أوت/كيك/بان)
@@ -214,59 +214,59 @@ const RECOGNITION = {
 
 const SUPPORT_PROMOTIONS = [
     {
-      from: 'Helper', to: 'Support', months: 2, score: 65, rating: 3.5,
+      from: 'Helper', to: 'Support', months: 2, rating: 3.5,
      maxWarnings: 0, windowDays: 180, warnWindowDays: 180,
      minActiveDays: 15, minMessages: null, requiresSupervisorRating: true,
      approvers: 'مشرف واحد', approvals: 1, approvalLevel: LEVELS.SUPERVISOR,
    },
    {
-     from: 'Support', to: 'Support Expert', months: 3, score: 70, rating: 4.0,
+     from: 'Support', to: 'Support Expert', months: 3, rating: 4.0,
      maxWarnings: 1, windowDays: 180, warnWindowDays: 180,
      minActiveDays: 20, minMessages: 100, fastResponseRequired: true,
      approvers: 'مشرف + مكتب الدعم', approvals: 2, approvalLevel: LEVELS.MANAGEMENT,
    },
    {
-     from: 'Support Expert', to: 'Support Analyst', months: 4, score: 75, rating: 4.2,
+     from: 'Support Expert', to: 'Support Analyst', months: 4, rating: 4.2,
      maxWarnings: 0, windowDays: 180, warnWindowDays: 180,
      minActiveDays: 20, minMessages: 150, fastResponseRequired: true,
      approvers: 'مكتب الدعم + Boss', approvals: 2, approvalLevel: LEVELS.MANAGEMENT,
    },
    {
-     from: 'Support Analyst', to: 'Supervisor Manager', months: 6, score: 80, rating: 4.5,
+     from: 'Support Analyst', to: 'Supervisor Manager', months: 6, rating: 4.5,
      maxWarnings: 0, windowDays: 180, warnWindowDays: 180,
-     minActiveDays: 20, minMessages: null, stableMonths: 1, stableMinScore: 65, fastResponseRequired: true,
+     minActiveDays: 20, minMessages: null, stableMonths: 1, stableMinPoints: 65, fastResponseRequired: true,
      approvers: 'مكتب الدعم + Boss', approvals: 2, approvalLevel: LEVELS.MANAGEMENT,
    },
    {
-     from: 'Supervisor Manager', to: 'Support Office', months: 8, score: 85, rating: 4.7,
+     from: 'Supervisor Manager', to: 'Support Office', months: 8, rating: 4.7,
      maxWarnings: 0, windowDays: 180, warnWindowDays: 180,
-     minActiveDays: 20, minMessages: null, stableMonths: 2, stableMinScore: 75, fastResponseRequired: true,
+     minActiveDays: 20, minMessages: null, stableMonths: 2, stableMinPoints: 75, fastResponseRequired: true,
      approvers: 'Boss فقط', approvals: 1, approvalLevel: LEVELS.BOSS,
    },
  ];
 const MOD_PROMOTIONS = [
    {
-     from: 'Trial Moderator', to: 'Moderator', months: 1, score: 60, actions: 15,
+     from: 'Trial Moderator', to: 'Moderator', months: 1, actions: 15,
      maxWarnings: 0, windowDays: 30, warnWindowDays: 30, minActiveDays: 15, maxWrongDecisions: 0,
      requiresConflictResolution: false,
      approvers: 'Admin أو Head Of Moderators', approvals: 1, approvalLevel: LEVELS.SUPERVISOR,
    },
    {
-     from: 'Moderator', to: 'Senior Moderator', months: 3, score: 70, actions: 30,
+     from: 'Moderator', to: 'Senior Moderator', months: 3, actions: 30,
      maxWarnings: 1, windowDays: 90, warnWindowDays: 90, minActiveDays: 20, maxWrongDecisions: 2,
      requiresConflictResolution: true, fastResponseRequired: true,
      approvers: 'Admin + Head Of Moderators', approvals: 2, approvalLevel: LEVELS.MANAGEMENT,
    },
    {
-     from: 'Senior Moderator', to: 'Admin', months: 4, score: 75, actions: 50,
+     from: 'Senior Moderator', to: 'Admin', months: 4, actions: 50,
      maxWarnings: 0, windowDays: 120, warnWindowDays: 120, minActiveDays: 22, maxWrongDecisions: 1,
      requiresConflictResolution: true, fastResponseRequired: true,
      approvers: 'Head Of Moderators', approvals: 1, approvalLevel: LEVELS.MANAGEMENT,
    },
    {
-     from: 'Admin', to: 'Head Of Moderators', months: 6, score: 85, actions: 60,
+     from: 'Admin', to: 'Head Of Moderators', months: 6, actions: 60,
      maxWarnings: 0, windowDays: 180, warnWindowDays: 180, minActiveDays: 25, maxWrongDecisions: 0,
-     requiresConflictResolution: true, fastResponseRequired: true, stableMonths: 1, stableMinScore: 75,
+     requiresConflictResolution: true, fastResponseRequired: true, stableMonths: 1, stableMinPoints: 75,
      approvers: 'Head الحالي + إدارة السيرفر', approvals: 2, approvalLevel: LEVELS.MANAGEMENT,
    },
  ];
@@ -278,14 +278,34 @@ const PROBATION = {
   minTicketsForRating: 5,    // لا نُقيّم المتوسط قبل هذا العدد من التكتات
 };
 
-// أوزان Score قابلة للضبط — مجموع كل فريق يجب أن يساوي 100.
-// Helper (بدون تكتات): شات 25 | تواجد 25 | تفاعل 25 | مشرف 25
-// Support فأعلى: تكتات 30 | سرعة+تقييم 25 | شات 25 | تواجد 20
-// الإشراف (كل الرتب): مخالفات 30 | سرعة (من السجلات) 25 | تواجد 25 | التزام 20
-const SCORE_WEIGHTS = {
-  helper: { chat: 25, presence: 25, teamInteraction: 25, supervisorRating: 25 },
-  support: { tickets: 30, speed: 25, chat: 25, presence: 20 },
-  moderation: { actions: 30, speed: 25, activity: 25, commitment: 20 },
+// ===== عتبات النقاط للترقية (نظام النقاط فقط — قرار المالك) =====
+// المفتاح هو الرتبة الحالية والقيمة هي عدد النقاط المطلوب للترقية إلى الرتبة التالية.
+// تُستخدم عتبات النقاط إلى جانب بقية الشروط والموافقات في بوابات الترقية.
+// هذا جدول بسيط مستقل عن SUPPORT_PROMOTIONS / MOD_PROMOTIONS — لا يُدمج فيها؛
+// تلك المصفوفات تحتفظ بشروط المدة والمخالفات والتقييم والموافقات (approvalLevel).
+//
+// حدود متعمّدة (ليست سهواً):
+// - مسار الدعم يتوقف عند 'Supervisor Manager' لأن 'Support Office' تعيين يدوي
+//   من Boss ولا تترقى لها رتبة تلقائياً.
+// - مسار الإشراف يتوقف عند 'Senior Moderator' لأن 'Admin' وما فوقها تعيين يدوي.
+// - أي رتبة غير مذكورة هنا = لا ترقية تلقائية، تُعرض للعضو كـ"ترقية يدوية".
+//
+// صيانة: أسماء المفاتيح يجب أن تطابق from/to في SUPPORT_PROMOTIONS و MOD_PROMOTIONS
+// و SUPPORT_RANKS و MOD_RANKS — عند إضافة رتبة جديدة أضف مدخلها هنا أيضاً.
+const POINTS_THRESHOLDS = {
+  support: {
+    'Helper': 200,
+    'Support': 500,
+    'Support Expert': 900,
+    'Support Analyst': 1400,
+    'Supervisor Manager': 2000,
+  },
+  moderation: {
+    'Trial Moderator': 200,
+    'Moderator': 550,
+    'Senior Moderator': 1000,
+    'Admin': 1500, // Estimated — Admin → Head Of Moderators (6 months, Management-approved). Await user confirmation.
+  },
 };
 
 
@@ -294,5 +314,6 @@ module.exports = {
   CHANNEL_META, CHANNEL_KEYS, OPTIONAL_CHANNEL_KEYS,
   ACTIVITY_WEIGHTS, ACTIVITY_TYPE_NAMES, SPAM, ABSENCE, LEAVE_TYPES, LEAVE_RULES, LEAVE_GLOBAL, VACATION_ROLE_TIMING, WEEKDAYS_AR,
   RESIGNATION_REASONS, RESIGNATION_GLOBAL, MOD_ACTION_TYPES,
-  NOTE_TYPES, WARNING_TYPES, RECOGNITION, SUPPORT_PROMOTIONS, MOD_PROMOTIONS, PROBATION, SCORE_WEIGHTS,
+  NOTE_TYPES, WARNING_TYPES, RECOGNITION, SUPPORT_PROMOTIONS, MOD_PROMOTIONS, PROBATION,
+  POINTS_THRESHOLDS,
 };

@@ -679,6 +679,9 @@ const MIGRATION_STEPS = [
   'human_ratings_column',
   'faq_categories',
   'drop_activity_monthly',
+  'points_ledger',
+  'point_freezes',
+  'points_unique_ref_per_user',
 ];
 
 /** يضمن وجود دفتر الإصدارات وسجل الأعطال حتى لو استُدعي migrate على قاعدة بلا SCHEMA. */
@@ -951,6 +954,69 @@ function migrate(database) {
   // القديمة تسقطه مرة واحدة ويُختم لها؛ والفريدة لا تراه أصلاً لأن SCHEMA لم
   // تعد تنشئه — وDROP TABLE IF EXISTS هو نفسه في الحالتين.
   runMigrationStep(database, 'drop_activity_monthly', () => database.exec('DROP TABLE IF EXISTS activity_monthly'));
+
+  // ===== نظام النقاط =====
+  // نقاط الترقية: جدول حركة (ledger) لا رصيدٌ يُعدَّل. كل إضافة أو خصم صفٌ
+  // يحمل سببَه ومصدره، فالرصيد مجموع الصفوف — وهذا ما يجعل «لماذا صار رصيدي
+  // كذا؟» سؤالاً تُجاب عنه بسجل لا بثقة.
+  //
+  // rank_epoch: عصر الرتبة. الترقية تصفّر النقاط، فلا بد من علامة تميّز نقاط
+  // الرتبة الحالية عن نقاط ما قبلها. الرصيد الفعّال هو مجموع صفوف هذا العصر
+  // وحده، فلا تختلط نقاط Helper سابقة مع نقاط Support الحالية.
+  //
+  // لماذا لا يُستبدل عمودٌ في staff_members برصيد جاهز: العمود يُكتب فوق نفسه،
+  // فيضيع «لماذا» ولا يمكن ردّ خطأ في المنح أو تدقيق موسم. الجدول يحفظ الكل.
+  runMigrationStep(database, 'points_ledger', () => {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS promotion_points (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        points INTEGER NOT NULL,
+        reason_key TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        ref_type TEXT,
+        ref_id TEXT,
+        added_by TEXT,
+        rank_epoch INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    // الفريد مقصور على الصفوف ذات المرجع: مرجع واحد لا يُمنح مرتين (تكتة
+    // مغلقة، تقييم، جائزة أسبوع). أما الصفوف بلا مرجع — الحضور اليومي مثلًا —
+    // فمتكررة بطبيعتها، وفريدتها الوهمية ترفض الصف الثاني المشروع.
+    database.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_points_unique_ref
+        ON promotion_points(reason_key, ref_type, ref_id) WHERE ref_id IS NOT NULL
+    `);
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_points_user_epoch ON promotion_points(user_id, rank_epoch)`);
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_points_created ON promotion_points(created_at)`);
+    // عصر كل عضو يبدأ من 0: لا يوجد عصر سالب، والقيمة الافتراضية تكفي لقاعدة
+    // جديدة — ولا نكتب على صفوف القواعد الحيّة هنا لأن الإقلاع الأول لهذه
+    // الخطوة يجعلها كلها 0 وهو المطلوب.
+    addTableColumns('staff_members', [['rank_epoch', 'INTEGER NOT NULL DEFAULT 0']]);
+  });
+
+  // تجميد النقاط: عقوبة على 3 تقييمات سلبية في أسبوع. صف واحد لكل عضو (المفتاح
+  // الأساسي هو user_id) يحمل «حتى متى» — لا حاجة لعدّ صفوف لمعرفة هل العضو
+  // مجمَّد، والسؤال يُسأل في كل منح نقطة.
+  runMigrationStep(database, 'point_freezes', () => {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS point_freezes (
+        user_id TEXT PRIMARY KEY,
+        until TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+  });
+
+  // Scope idempotency to the member: shared awards (for example star_week)
+  // reference the same period for every recipient.
+  runMigrationStep(database, 'points_unique_ref_per_user', () => {
+    database.exec('DROP INDEX IF EXISTS idx_points_unique_ref');
+    database.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_points_unique_user_ref
+      ON promotion_points(user_id, reason_key, ref_type, ref_id) WHERE ref_id IS NOT NULL`);
+  });
 }
 
 /**

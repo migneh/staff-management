@@ -213,7 +213,7 @@ async function saveTicket(i, input, sourceLabel = 'يدوي') {
     ticketId: input.ticketId,
     source: input.source || 'manual',
     rowId: result.row.id,
-    manualOverride: input.source === 'manual' && input.claimer !== i.user.id,
+    manualOverride: input.source === 'manual' && (input.claimer !== i.user.id || (input.closer || input.claimer) !== input.claimer),
   }, channelId: i.channelId });
   const e = ticketEmbed(result, i.user.id, sourceLabel);
   // saveTicket يُستدعى من modal submit (ticket:log) ⇒ deferReply لا deferUpdate.
@@ -254,6 +254,9 @@ module.exports = {
     'ticket:log': async (i, [closerOverride] = []) => {
       const ticketId = i.fields.getTextInputValue('ticket_id').trim();
       const owner = i.fields.getTextInputValue('owner').trim();
+      if (!/^(?:\d{2,}|[A-Za-z][\w-]*-\d+)$/i.test(ticketId)) {
+        return replyEphemeral(i, '❌ رقم التكت غير صحيح. استخدم رقماً أو معرّفاً مثل `ticket-1042`.', COLORS.danger);
+      }
       const optional = id => { try { return (i.fields.getTextInputValue(id) || '').trim(); } catch { return ''; } };
       const claimer = optional('claimer') || i.user.id;
       const closer = optional('closer') || (ID_RE.test(closerOverride || '') ? closerOverride : claimer);
@@ -262,6 +265,11 @@ module.exports = {
       if (!ID_RE.test(owner) || !ID_RE.test(claimer) || !ID_RE.test(closer)) return replyEphemeral(i, '❌ معرفات الأعضاء غير صحيحة.', COLORS.danger);
       const rating = ratingRaw && ratingRaw !== 'none' ? Number(ratingRaw) : null;
       if (rating != null && !(Number.isInteger(rating) && rating >= 1 && rating <= 5)) return replyEphemeral(i, '❌ التقييم يجب أن يكون بين 1 و 5.', COLORS.danger);
+      if (closer !== claimer) {
+        const blocked = actionBlockedMessage(i, closer);
+        if (blocked) return replyEphemeral(i, blocked, COLORS.danger);
+        if (rating != null && rating > 2) return replyEphemeral(i, '❌ تقييم تعديل أداء الإغلاق يجب أن يكون 1 أو 2.', COLORS.danger);
+      }
       if (claimer !== i.user.id && i.staffLevel < LEVELS.SUPERVISOR) {
         return replyEphemeral(i, '❌ لا يمكنك تسجيل تكت باسم إداري آخر. هذه الصلاحية متاحة للمشرفين فأعلى.', COLORS.danger);
       }

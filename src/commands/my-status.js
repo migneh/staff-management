@@ -5,12 +5,13 @@ const settings = require('../services/settings');
 const activity = require('../services/activity');
 const staffService = require('../services/staff');
 const promotions = require('../services/promotions');
-const score = require('../services/score');
+const points = require('../services/points');
 const clock = require('../clock');
 const tasks = require('../services/tasks');
 const leaveService = require('../services/leaves');
-const { embed, COLORS, replyEphemeral, arDigits, progressBar, tsRelative, truncate } = require('../utils');
+const { embed, COLORS, replyEphemeral, arDigits, progressBar, truncate } = require('../utils');
 const kit = require('../ui/kit');
+const { tsRelative } = require('../ui/kit');
 
 module.exports = {
   commands: [
@@ -44,15 +45,16 @@ module.exports = {
         // Get current rank
         const currentRank = member.rank;
         const currentTeam = member.team;
-        
+
         // Get promotion evaluation
         const promoEval = promotions.evaluate(member);
         const pointsToNextRank = 0;
         const monthsInRank = clock.monthsSince(member.rank_since);
-        
-        // Get current score
-        const currentScoreObj = score.compute(member);
-        const currentScore = currentScoreObj.score;
+
+        // Get current points balance
+        const totalPoints = points.getBalance(userId);
+        const frozen = points.isFrozen(userId).frozen;
+        const rankFromBalance = member.rank;
         
         // Get current tasks
         const pendingTasks = tasks.list(userId, { includeCompleted: false, limit: 10 });
@@ -72,8 +74,8 @@ module.exports = {
           title: `📊 حالتك الحالية — <@${userId}>`,
           description: `${member.rank} • ${TEAMS[member.team] || member.team} • ${STATUS[member.status] || member.status}`,
           fields: [
-            { name: '💯 نقاط الترقية', value: `${arDigits(currentScoreObj.raw?.messages || 0)}`, inline: true },
-            { name: '📈 تقييمك (Score)', value: `${currentScore}/100 (${score.grade(currentScore)})`, inline: true },
+            { name: '💯 نقاط الترقية', value: `**${arDigits(totalPoints)}** pts`, inline: true },
+            { name: '📊 رتبتك الحالية', value: `${rankFromBalance}${frozen ? ' ❄️' : ''}`, inline: true },
             { name: '📅 النشاط (30 يوم)', value: `${arDigits(activityStats.activeDays)} يوم`, inline: true },
             { name: '💬 الرسائل (30 يوم)', value: `${arDigits(activityStats.messages)}`, inline: true },
             { name: '🎯 النقاط المرجحة (30 يوم)', value: `${arDigits(activityStats.weighted)}`, inline: true },
@@ -202,16 +204,16 @@ e.addFields({
               return `${typeName}: **${arDigits(count)}**`;
             }).join('\n'),
           });
-          
-          // Add score factor breakdown
-          if (currentScoreObj.factors) {
-            const factorDetails = currentScoreObj.factors.map(f => {
-              const icon = f.assessed ? '✅' : '⏳';
-              return `${icon} **${f.name}**: ${f.pts}/${f.max} — ${f.detail}`;
+
+          // Add points breakdown from promotion evaluation
+          if (promoEval.checks.length > 0) {
+            const pointsDetails = promoEval.checks.map(check => {
+              const statusIcon = check.pass ? '✅' : '❌';
+              return `${statusIcon} **${check.label}**: ${check.actual} / ${check.required}`;
             }).join('\n');
             e.addFields({
-              name: '📈 تفصيل Score',
-              value: truncate(factorDetails, 1024),
+              name: '🎯 تفاصيل نقاط الترقية',
+              value: truncate(pointsDetails, 1024),
             });
           }
         }

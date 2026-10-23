@@ -115,15 +115,13 @@ describe('reads are untouched: the toggle gates writes, it does not rewrite hist
     assert.equal(stats.messages, 3, 'existing rows were dropped or hidden');
   });
 
-  test('the Score engine still reads whatever history exists (blast radius, not a second switch)', () => {
+  test('report raw data still reads whatever history exists (blast radius, not a second switch)', () => {
     for (let k = 0; k < 10; k++) activity.record(ME, CH, `رسالة قبل الإيقاف رقم ${k} هنا`);
     settings.setFeatureToggle('activityTracking', false);
-    getDb().prepare("INSERT INTO staff_members (user_id, username, team, rank, status) VALUES (?, 'me', 'support', 'Support', 'active')").run(ME);
-    const score = require('../src/services/score');
 
-    const raw = score.monthlyRaw(ME);
+    const raw = require('../src/services/reports').getRaw(ME);
 
-    assert.equal(raw.messages, 10, 'the score raw data stopped seeing existing rows');
+    assert.equal(raw.messages, 10, 'report raw data stopped seeing existing rows');
   });
 });
 

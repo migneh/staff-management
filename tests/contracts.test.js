@@ -10,8 +10,6 @@ const { spawnSync } = require('child_process');
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
 const { openMemoryDb } = require('../src/database');
-const { SCORE_WEIGHTS } = require('../src/constants');
-const settings = require('../src/services/settings');
 const { commands, validateRegistry } = require('../src/commands');
 
 const ROOT = path.join(__dirname, '..');
@@ -35,39 +33,6 @@ function readmeCommandNames() {
 }
 
 describe('عقود المشروع', () => {
-  describe('أوزان التقييم', () => {
-    test('مجموع أوزان كل فريق في SCORE_WEIGHTS يساوي 100 بالضبط', () => {
-      const bad = [];
-      for (const [team, weights] of Object.entries(SCORE_WEIGHTS)) {
-        const total = Object.values(weights).reduce((a, b) => a + Number(b), 0);
-        if (total !== 100) bad.push(`${team}: ${total} (${JSON.stringify(weights)})`);
-      }
-      assert.equal(bad.length, 0, `أوزان لا تساوي 100 — الترتيب بين الفرق يصبح غير قابل للمقارنة:\n  ${bad.join('\n  ')}`);
-    });
-
-    test('scoreWeights(team) في الخدمة تُعيد أوزاناً مجموعها 100 لكل فريق', () => {
-      // العقد الحقيقي ليس في الثوابت فقط: settings.scoreWeights هي ما يقرأه
-      // score.js فعلياً، وقد تدمج تعديلاً محفوظاً فوق الأساس.
-      const bad = [];
-      for (const team of Object.keys(SCORE_WEIGHTS)) {
-        const weights = settings.scoreWeights(team);
-        const total = Object.values(weights).reduce((a, b) => a + Number(b), 0);
-        if (total !== 100) bad.push(`${team}: ${total}`);
-      }
-      assert.equal(bad.length, 0, `scoreWeights لا تعيد مجموعاً = 100:\n  ${bad.join('\n  ')}`);
-    });
-
-    test('setScoreWeights يرفض أي مجموعة لا تساوي 100', () => {
-      // الطرف المقابل: لو مرّ مجموع خاطئ من هنا، فالثابت أعلاه ينهار لاحقاً.
-      const team = Object.keys(SCORE_WEIGHTS)[0];
-      const good = { ...SCORE_WEIGHTS[team] };
-      const bad = { ...good };
-      bad[Object.keys(bad)[0]] = Number(bad[Object.keys(bad)[0]]) + 1;
-      assert.equal(settings.setScoreWeights(team, good).ok, true, 'رفض مجموعة صحيحة — الحارس صار أضيق من العقد');
-      assert.equal(settings.setScoreWeights(team, bad).ok, false, 'قَبِل أوزاناً مجموعها ليس 100');
-    });
-  });
-
   describe('سجل الأوامر', () => {
     test('validateRegistry() يرجع قائمة فراغية', () => {
       const problems = validateRegistry();

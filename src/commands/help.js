@@ -19,14 +19,14 @@ const modals = {
   }),
 };
 const { tsRelative } = require('../ui/kit');
-const { scoreEmoji } = require('../utils');
 const staffService = require('../services/staff');
 const reports = require('../services/reports');
 const promo = require('../services/promotions');
+const points = require('../services/points');
 const faq = require('../services/faq');
 const taskService = require('../services/tasks');
 const { getDb } = require('../database');
-const { userEmbed, COLORS, progressBar, scoreColor, hoursSince, replyEphemeral } = require('../utils');
+const { userEmbed, COLORS, progressBar, hoursSince, replyEphemeral } = require('../utils');
 
 /**
  * رمز كل حالة في constants.STATUS — مصدر واحد لكل ما يرسم حالة عضو.
@@ -61,7 +61,8 @@ function statusGlyph(status) {
 
 function dashboard(i) {
   const s = staffService.get(i.user.id);
-  const r = reports.individual(s);
+  const totalPoints = points.getBalance(i.user.id);
+  const frozen = points.isFrozen(i.user.id).frozen;
   const ev = promo.evaluate(s);
   const unread = faq.unreadFor(i.user.id).length;
   const db = getDb();
@@ -69,7 +70,6 @@ function dashboard(i) {
   const pendingPromo = promo.pendingRequest(i.user.id);
   const pendingTasks = taskService.pendingCount(i.user.id);
   const h = hoursSince(s.last_activity);
-  const trend = reports.personalTrend(s);
   const blocker = ev.checks.find(c => !c.pass);
 
   const statusIcon = statusGlyph(s.status);
@@ -79,13 +79,13 @@ function dashboard(i) {
   if (h > 48 && s.status !== 'on_leave') alerts.push(`⏰ آخر نشاط ${tsRelative(s.last_activity)} — سجّل حضورك بالعمل المعتاد.`);
   if (ev.eligible && !pendingPromo) alerts.push('🎉 أنت مؤهل للترقية! اختر «طلب ترقية» من قائمة الإجراءات.');
 
+  const currentRank = s.rank;
   const e = userEmbed(i.member, `${statusIcon} لوحتي الشخصية`,
-    `**${s.rank}** • ${TEAMS[s.team]} • **${STATUS[s.status]}**\nبالرتبة ${tsRelative(s.rank_since)}`, scoreColor(r.score));
+    `**${s.rank}** • ${TEAMS[s.team]} • **${STATUS[s.status]}**\nبالرتبة ${tsRelative(s.rank_since)}`, COLORS.primary);
   e.addFields(
     { name: '🎯 ابدأ بهذه الخطوة', value: alerts[0] || (blocker ? `للاقتراب من الترقية: **${blocker.label}** — الحالي ${blocker.actual} / المطلوب ${blocker.required}.` : '✅ لا توجد إجراءات عاجلة. يمكنك مراجعة أدائك أو تصفح المعرفة.') },
-    { name: `${scoreEmoji(r.score)} درجة الأداء (Score)`, value: `**${r.score}/100** — ${r.grade}\n${progressBar(r.score, 100, 10)}`, inline: true },
-    { name: '📅 النشاط خلال ٣٠ يوماً', value: `**${r.raw.activeDays}** يوم${s.team === 'support' ? ` • **${r.raw.tickets}** تكت` : s.team === 'moderation' ? ` • **${r.raw.actions}** إجراء` : ''}`, inline: true },
-    { name: '📊 مقارنة أسبوعية', value: `Score **${trend.currentScore}** • التغير **${trend.scoreDelta >= 0 ? '+' : ''}${trend.scoreDelta}** عن الأسبوع السابق.\nأيام النشاط: **${trend.currentActiveDays}** هذا الأسبوع / **${trend.previousActiveDays}** السابق.${trend.streakWeeks ? `\n🔥 ${trend.streakWeeks} أسبوع نشاط متواصل.` : ''}` },
+    { name: `💯 نقاط الترقية`, value: `**${totalPoints} pts** — ${currentRank}\n${progressBar(Math.min(totalPoints, 1500), 1500, 10)}`, inline: true },
+    { name: '📅 النشاط', value: `**الرتبة الحالية:** ${currentRank}${frozen ? ' ❄️' : ''}`, inline: true },
   );
   if (ev.rule) {
     const passed = ev.checks.filter(c => c.pass).length;
@@ -117,7 +117,7 @@ module.exports = {
       async execute(i) { return i.reply({ ...helpPayload(i), ephemeral: true }); },
     },
     {
-      data: new SlashCommandBuilder().setName('me').setDescription('🏠 لوحتك الشخصية: الحالة، Score، الترقية، المهام'),
+      data: new SlashCommandBuilder().setName('me').setDescription('🏠 لوحتك الشخصية: الحالة، النقاط، الترقية، المهام'),
       level: LEVELS.STAFF,
       async execute(i) {
         if (!i.staffInfo) return replyEphemeral(i, 'ℹ️ لا توجد لك بطاقة إداري لأنك تستخدم صلاحية Server Manager فقط.', COLORS.info);

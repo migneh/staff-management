@@ -4,7 +4,7 @@ const { getDb } = require('./database');
 const staffService = require('./services/staff');
 const reports = require('./services/reports');
 const load = require('./services/load');
-const score = require('./services/score');
+const points = require('./services/points');
 const { ABSENCE, LEAVE_GLOBAL, LEAVE_TYPES } = require('./constants');
 const settings = require('./services/settings');
 const leaveService = require('./services/leaves');
@@ -452,22 +452,21 @@ function activeLeaveUsers() {
  * مرحلة بيانات التقرير الأسبوعي — المواد الخام تُقرأ **مرّتين مطلقاً** لا 14N:
  *
  * قبل التجميع كان المسار ثلاث قطوعات مستقلة فوق البيانات نفسها:
- *  • قائمة المراجعة: `score.monthlyRaw(id, 7, 0)` لكل عضو — 7 عبارات × N.
+ *  • قائمة المراجعة: قراءة خام منفصلة لكل عضو.
  *  • لوحتا الترتيب: `leaderboard()` بلا دفعة مشتركة — 9 × 2 (ولو كان مشتركاً
- *    فهو9 ثابتة لا المشكلة الأصلية).
- *  • رسائل الخاص: `individual()` بلا `pre` يسقط إلى `monthlyRaw` — 7N + N استعلام
- *    إنذارات.
- * أي 14N + استعلامات الإجازة (2N). الآن دفعتان فقط من `reports.rawBatch`:
- * واحدة لنافذة القائمة (7 أيام) وأخرى لنافذة الترتيب والخاص، وثلاثة المستهلكين
- * يقرأون منهما. `rawBatch` لا يقبل إزاحة، وكلا المستهلكين عند الإزاحة صفر،
- * فالنافذة المحسوبة من اليوم مطابقة لـ `monthlyRaw(id, days, 0)` حقل بحقل
+ *    فهو 9 ثابتة لا المشكلة الأصلية).
+ *  • رسائل الخاص: `individual()` بلا `pre` يعيد قراءة البيانات الخام لكل عضو
+ *    ويجري استعلام الإنذارات منفصلاً.
+ * الآن دفعتان فقط من `reports.rawBatch`: واحدة لنافذة القائمة (7 أيام) وأخرى
+ * لنافذة الترتيب والخاص، وثلاثة المستهلكين يقرأون منهما. كلا المستهلكين عند
+ * الإزاحة صفر، فتطابق النافذة اليومية بيانات التقرير الخام حقلًا بحقل
  * (مثبت في tests/ackWindowFinish.test.js وtests/weeklyReportBatch.test.js).
  *
  * التصفية تبقى عند كل مستهلك كما كانت تماماً: القائمة تستبعد المستثنى
  * (INACTIVE_STATUSES) والتجربة ومن هو في إجازة؛ اللوحتان عبر `isRankable`
  * داخل `leaderboard`؛ والخاص لا يستبعد إلا المستقيل والمحذوف.
  *
- * @returns {{below: {user: string, rank: string, score: number}[],
+ * @returns {{below: {user: string, rank: string, pointsEarned: number}[],
  *            boards: Record<string, object[]>,
  *            dms: {user: string, report: object}[],
  *            idle: object[],
@@ -476,37 +475,65 @@ function activeLeaveUsers() {
 function weeklyReportData() {
   const all = staffService.all();
   const windowDays = reportCmds.LEADERBOARD_WINDOW_DAYS;
-  const ids = all.map(m => String(m.user_id));
   const onLeave = activeLeaveUsers();
 
-  // نافذتان مختلفتان ⇒ دفعتان لا واحدة.
-  const weekBatch = reports.rawBatch(ids, 7);
-  const windowBatch = reports.rawBatch(ids, windowDays);
+  // أعضاء مؤهلون لفحص النقاط الأسبوعية، مع استبعاد الإجازات والحالات المعفاة.
+  const belowMembers = all.filter(m => !EXEMPT.includes(m.status)
+    && m.status !== 'probation' && !onLeave.has(String(m.user_id)));
+  const belowIds = belowMembers.map(m => String(m.user_id));
 
-  // ===== قائمة المراجعة الأسبوعية =====
-  // سياسة معلنة: لا خصم ولا مكافأة تلقائية. الأسبوع الضعيف يُراجع بشرياً
-  // (قائمة المراجعة أدناه) بدل تعديل رصيد نقاط لم يعد له وجود.
+  // ===== قائمة المراجعة الأسبوعية — يستخدم النقاط كمؤشر أداء أسبوعي =====
+  // سياسة معلنة: لا خصم ولا مكافأة تلقائية. الأسبوع الضعيف يُراجع بشرياً.
+  // نجمع نقاط العصر الحالي لكل الأعضاء باستعلام واحد، ثم ندرج من لم يكسبوا.
   const below = [];
-  for (const m of all) {
-    if (EXEMPT.includes(m.status)) continue;
-    if (m.status === 'probation') continue; // عضو جديد لا يُعاقب قبل أن يبدأ
-    if (onLeave.has(String(m.user_id))) continue;
-    const pre = weekBatch.get(String(m.user_id));
-    const sc = score.compute(m, pre ? pre.row : score.monthlyRaw(m.user_id, 7, 0)).score; // 7 days, no offset
-    if (sc < 50) below.push({ user: m.user_id, rank: m.rank, score: sc });
+  const weekEnd = today();
+  const weekStart = addDays(weekEnd, -6);
+  const { start: weekWindowStart, endExclusive: weekWindowEnd } = clock.dayWindow(weekStart, weekEnd) || {};
+
+  if (weekWindowStart && weekWindowEnd && belowIds.length) {
+    const rows = getDb().prepare(`
+      SELECT p.user_id, SUM(p.points) total
+      FROM promotion_points p
+      JOIN staff_members m ON m.user_id = p.user_id AND m.rank_epoch = p.rank_epoch
+      WHERE p.user_id IN (${belowIds.map(() => '?').join(',')})
+        AND p.created_at >= ? AND p.created_at < ?
+      GROUP BY p.user_id
+    `).all(...belowIds, weekWindowStart, weekWindowEnd);
+    const earnedByUser = new Map(rows.map(r => [String(r.user_id), Number(r.total) || 0]));
+
+    for (const m of belowMembers) {
+      if ((earnedByUser.get(String(m.user_id)) || 0) === 0) {
+        below.push({ user: m.user_id, rank: m.rank, pointsEarned: 0 });
+      }
+    }
   }
 
-  // ===== الترتيب — دفعة واحدة مشتركة للفريقين والرسائل =====
+  // ===== الترتيب بالنقاط (العصر الحالي) — points.leaderboard لا يحتاج دفعة =====
   const boards = {};
   for (const t of ['support', 'moderation']) {
-    boards[t] = reports.leaderboard(t, windowDays, { pre: windowBatch });
+    boards[t] = points.leaderboard({ team: t, limit: 20 });
   }
 
-  // ===== تقارير فردية بالخاص =====
+  // ===== تقارير فردية بالخاص — دفعة واحدة عبر rawBatch ثم individual(pre) =====
+  // يختصر N استدعاء monthlyRaw إلى استعلام واحد لكل جدول (ثابت لا ينمو مع الأعضاء).
+  const recipientIds = all
+    .filter(m => m.status !== 'resigned' && m.status !== 'removed')
+    .map(m => String(m.user_id));
+  const preBatch = reports.rawBatch(recipientIds, windowDays);
+  const balanceRows = recipientIds.length ? getDb().prepare(`
+    SELECT p.user_id, COALESCE(SUM(p.points), 0) total
+    FROM staff_members m LEFT JOIN promotion_points p
+      ON p.user_id = m.user_id AND p.rank_epoch = m.rank_epoch
+    WHERE m.user_id IN (${recipientIds.map(() => '?').join(',')})
+    GROUP BY m.user_id
+  `).all(...recipientIds) : [];
+  const balances = new Map(balanceRows.map(r => [String(r.user_id), Number(r.total) || 0]));
+
   const dms = [];
   for (const m of all) {
     if (m.status === 'resigned' || m.status === 'removed') continue;
-    dms.push({ user: m.user_id, report: reports.individual(m, windowDays, windowBatch.get(String(m.user_id))) });
+    const pre = { ...preBatch.get(String(m.user_id)), points: balances.get(String(m.user_id)) || 0 };
+    dms.push({ user: m.user_id, report: { ...reports.individual(m, windowDays, pre), skipPromotionEvaluation: true } });
   }
 
   // ===== الخاملون =====
@@ -520,13 +547,13 @@ async function weeklyReport(client) {
   const week = today();
   const { below, boards, dms, idle, windowDays } = weeklyReportData();
 
-  // ===== الترتيب =====
-  const embeds = [embed(`📆 التقرير الأسبوعي — ${kit.tsDate(week)}`, `الترتيب على آخر **${windowDays}** يوماً (نافذة موحّدة لكل تقارير الترتيب).`, COLORS.primary)];
+  // ===== الترتيب بالنقاط (العصر الحالي) =====
+  const embeds = [embed(`📆 التقرير الأسبوعي — ${kit.tsDate(week)}`, `الترتيب على نقاط الترقية (الحقبة الحالية) — **${windowDays}** يوماً للنافذة المرجعية.`, COLORS.primary)];
   for (const t of ['support', 'moderation']) {
     const lb = boards[t];
-    // Points system removed — the weekly snapshot keeps score only.
-    reports.save('weekly', `${week}:${t}`, lb.map(r => ({ user: r.staff.user_id, score: r.score })));
-    embeds.push(reportCmds.leaderboardEmbed(lb, `🏆 ترتيب ${t === 'support' ? 'فريق الدعم الفني' : 'فريق الإشراف'} (آخر ${windowDays} يوم)`, windowDays));
+    // حفظ التقرير الأسبوعي بالنقاط
+    reports.save('weekly', `${week}:${t}`, lb.map(r => ({ user: r.user_id, points: r.total, rank: r.rank, team: r.team, status: r.status })));
+    embeds.push(reportCmds.leaderboardEmbed(lb, `🏆 ترتيب ${t === 'support' ? 'فريق الدعم الفني' : 'فريق الإشراف'} (الحقبة الحالية)`, windowDays));
   }
   await sendToChannel(client, 'performance-reports', { embeds });
 
@@ -543,10 +570,10 @@ async function weeklyReport(client) {
     await sendToChannel(client, 'staff-alerts', { embeds: [embed('⚖️ فحص عدالة الحمل الأسبوعي', `${fairnessWarnings.join('\n')}\n\nراجعوا **/team-load** قبل توزيع المناوبات أو المهام.`, COLORS.warning)] });
   }
 
-  // ===== قائمة مراجعة بشرية بدل الخصم =====
+  // ===== قائمة مراجعة بشرية بدل الخصم — تستخدم النقاط كمؤشر أسبوعي =====
   if (below.length) {
-    const lines = below.sort((a, b) => a.score - b.score).slice(0, 15)
-      .map(r => `• <@${r.user}> — ${r.rank} • Score ${r.score}`);
+    const lines = below.slice(0, 15)
+      .map(r => `• <@${r.user}> — ${r.rank} • pointsEarned: ${r.pointsEarned} نقاط مكتسبة هذا الأسبوع`);
     await sendToChannel(client, 'staff-alerts', {
       embeds: [embed('🔎 للمراجعة البشرية — أداء أسبوعي منخفض',
         `${lines.join('\n')}${below.length > 15 ? `\n_… و${below.length - 15} آخرين_` : ''}\n\n_لا يُخصم شيء تلقائياً. راجعوا الحالة واتخذوا قراراً موثقاً (إنذار/مهمة متابعة/تدريب)._`,
@@ -554,7 +581,7 @@ async function weeklyReport(client) {
     });
   }
 
-  // ===== تقارير فردية بالخاص =====
+  // ===== تقارير فردية بالخاص — تستخدم النقاط للمقارنة الأسبوعية =====
   for (const d of dms) {
     await dm(client, d.user, { embeds: [reportCmds.performanceEmbed(d.report)] });
   }
@@ -565,21 +592,31 @@ async function weeklyReport(client) {
 async function monthlyReport(client) {
   const period = today().slice(0, 7);
   const prevPeriod = addDays(today().slice(0, 7) + '-01', -1).slice(0, 7);
+  const monthStart = `${period}-01`;
+  const nextMonth = addDays(monthStart, 1).slice(0, 7);
+  const monthEnd = addDays(nextMonth + '-01', -1);
+  const db = getDb();
+  const onLeave = activeLeaveUsers();
   const embeds = [];
+
   for (const t of ['support', 'moderation']) {
-    const rows = reports.team(t);
-    const avg = rows.length ? Math.round(rows.reduce((s, r) => s + r.score, 0) / rows.length) : 0;
+    // استخدام points.leaderboard للنقاط الإجمالية في العصر الحالي
+    const rows = points.leaderboard({ team: t, limit: 20 });
+    const avg = rows.length ? Math.round(rows.reduce((s, r) => s + r.total, 0) / rows.length) : 0;
     const prev = reports.lastSaved('monthly', `${prevPeriod}:${t}`);
     const diff = prev ? avg - prev.avg : null;
-    reports.save('monthly', `${period}:${t}`, { avg, members: rows.map(r => ({ user: r.staff.user_id, score: r.score })) });
-    // استخدم نفس بوابة «أفضل إداري» المعلنة في reports.js لا مجرد أعلى Score،
-    // فهو يمنع تسمية عضو بلا عمل فعلي أو في إجازة/تجربة.
-    const best = reports.bestOfMonth(rows);
+
+    // حفظ التقرير الشهري بالنقاط
+    reports.save('monthly', `${period}:${t}`, { avg, members: rows.map(r => ({ user: r.user_id, points: r.total, rank: r.rank, team: r.team, status: r.status })) });
+
+    // الأفضل في الشهر: أعلى رصيد نقاط في الشهر الحالي مع حد أدنى 20 يوم نشاط
+    // (هذه المنح يحدث في monthlyBest job، هنا نقرأ فقط)
+    const best = rows.length ? rows[0] : null;
+
     embeds.push(embed(`🗓️ التقرير الشهري — ${t === 'support' ? 'الدعم الفني' : 'الإشراف'} (${period})`,
-       `متوسط Score: **${avg}**${diff != null ? ` (${diff >= 0 ? '📈 +' : '📉 '}${diff} عن الشهر الماضي)` : ''}\n🏅 أفضل إداري: ${best ? `<@${best.staff.user_id}> (${best.score})` : '—'}\n` +
-       `🎫/🛡️ الإجمالي: ${rows.reduce((s, r) => s + (t === 'support' ? r.raw.tickets : r.raw.actions), 0)}\n⚠️ إنذارات: ${rows.reduce((s, r) => s + r.warnings.reduce((x, w) => x + w.c, 0), 0)}`, COLORS.primary));
+       `متوسط النقاط: **${avg}**${diff != null ? ` (${diff >= 0 ? '📈 +' : '📉 '}${diff} عن الشهر الماضي)` : ''}\n🏅 أفضل إداري: ${best ? `<@${best.user_id}> (${best.total} pts)` : '—'}\n` +
+       `🏅 أفضل إداري (مكافأة): ${best ? `<@${best.user_id}> (+50 best_month)` : '—'}`, COLORS.primary));
   }
-  const db = getDb();
   const res = db.prepare(`SELECT reason, reason_category FROM resignations WHERE status = 'accepted' AND reviewed_at >= datetime('now', '-30 days')`).all();
   if (res.length) {
     const byCat = {};
@@ -591,6 +628,289 @@ async function monthlyReport(client) {
     embeds.push(embed('📤 تحليل الاستقالات (30 يوم)', lines.join('\n') + '\n\n' + res.slice(0, 3).map((r, k) => `${k + 1}. ${String(r.reason).slice(0, 120)}`).join('\n'), COLORS.gray));
   }
   await sendToChannel(client, 'performance-reports', { embeds });
+}
+
+// ===== نقاط الصيانة: مهام يومية/أسبوعية/شهرية لنظام النقاط =====
+
+/**
+ * الحضور اليومي: يمنح +1 daily_active لكل إداري نشط اليوم.
+ *
+ * "نشط" = لديه سجل في activity_logs لليوم الحالي (أي قناة غير general).
+ * لا يمنح لمن في إجازة أو حالة مستثناة.
+ * المرجع اليومي (refType='day', refId=YYYY-MM-DD) يمنع التكرار عند إعادة التشغيل.
+ */
+async function dailyPresence(client) {
+  const t = addDays(today(), -1);
+  const db = getDb();
+  const onLeave = activeLeaveUsers();
+
+  // أعضاء لديهم نشاط اليوم في قنوات العمل (ليس general)
+  const activeIds = db.prepare(`
+    SELECT DISTINCT user_id FROM activity_logs
+    WHERE day = ? AND channel_type != 'general'
+  `).all(t).map(r => String(r.user_id));
+
+  let granted = 0;
+  for (const userId of activeIds) {
+    const m = staffService.get(userId);
+    if (!m) continue;
+    if (EXEMPT.includes(m.status)) continue;
+    if (onLeave.has(userId)) continue;
+
+    const r = points.add({ userId, reasonKey: 'daily_active', refType: 'day', refId: t, addedBy: 'auto' });
+    if (r.ok) granted++;
+  }
+  logger.info(`☀️ حضور يومي: مُنح لـ ${granted} إداري (${t}).`);
+}
+
+/**
+ * نجم الأسبوع: يختار أفضل إداري دعم/إشراف (باستثناء الإجازة والتجربة) ويمنح +10 star_week.
+ *
+ * المعايير: أعلى رصيد نقاط في العصر الحالي خلال الأيام الـ 7 الماضية.
+ * لا يُمنح لمن فاز بالأسبوع الماضي (عدم فوز متتالي).
+ * يعمل يوم الجمعة (0 10 * * 5) قبل التقرير الأسبوعي.
+ */
+async function weeklyStar(client) {
+  const db = getDb();
+  const weekStart = addDays(today(), -6);
+  const weekEnd = today();
+  const onLeave = activeLeaveUsers();
+
+  const candidates = [];
+  for (const m of staffService.all()) {
+    if (EXEMPT.includes(m.status)) continue;
+    if (m.status === 'probation') continue;
+    if (onLeave.has(String(m.user_id))) continue;
+
+    // رصيد النقاط في الـ 7 أيام الماضية للعصر الحالي
+    const { start, endExclusive } = clock.dayWindow(weekStart, weekEnd) || {};
+    if (!start) continue;
+    const sum = db.prepare(`
+      SELECT COALESCE(SUM(points), 0) total FROM promotion_points
+      WHERE user_id = ? AND rank_epoch = ? AND created_at >= ? AND created_at < ?
+    `).get(m.user_id, m.rank_epoch ?? 0, start, endExclusive).total;
+
+    if (Number(sum) > 0) {
+      candidates.push({ userId: m.user_id, team: m.team, points: Number(sum), rank: m.rank });
+    }
+  }
+
+  if (!candidates.length) {
+    logger.info('⭐ نجم الأسبوع: لا يوجد مرشحون.');
+    return;
+  }
+
+  // أفضل لكل فريق
+  const byTeam = { support: [], moderation: [] };
+  for (const c of candidates) {
+    if (byTeam[c.team]) byTeam[c.team].push(c);
+  }
+
+  let granted = 0;
+  for (const team of ['support', 'moderation']) {
+    const teamCandidates = byTeam[team].sort((a, b) => b.points - a.points);
+    if (!teamCandidates.length) continue;
+
+    const winner = teamCandidates[0];
+
+    // تحقق من عدم الفوز المتتالي: هل فاز بالأسبوع الماضي؟
+    const lastWeekStart = addDays(weekStart, -7);
+    const lastWeekEnd = addDays(weekStart, -1);
+    const { start: ls, endExclusive: le } = clock.dayWindow(lastWeekStart, lastWeekEnd) || {};
+    let consecutive = false;
+    if (ls) {
+      const lastWin = db.prepare(`
+        SELECT 1 FROM promotion_points
+        WHERE user_id = ? AND reason_key = 'star_week' AND created_at >= ? AND created_at < ?
+        LIMIT 1
+      `).get(winner.userId, ls, le);
+      consecutive = !!lastWin;
+    }
+
+    if (consecutive && teamCandidates.length > 1) {
+      // انتقل للمركز الثاني
+      const runnerUp = teamCandidates[1];
+      const r = points.add({ userId: runnerUp.userId, reasonKey: 'star_week', refType: 'week', refId: weekStart, addedBy: 'auto' });
+      if (r.ok) {
+        granted++;
+        logger.info(`⭐ نجم الأسبوع (${team}): <@${runnerUp.userId}> (${runnerUp.points} نقطة) — الفائز السابق مُستثنى.`);
+        await dm(client, runnerUp.userId, { embeds: [embed('⭐ نجم الأسبوع!', `تهانينا! فزت بلقب **نجم الأسبوع** في فريق ${team === 'support' ? 'الدعم الفني' : 'الإشراف'} وحصلت على **+10 نقاط**.`, COLORS.success)] });
+      }
+    } else {
+      const r = points.add({ userId: winner.userId, reasonKey: 'star_week', refType: 'week', refId: weekStart, addedBy: 'auto' });
+      if (r.ok) {
+        granted++;
+        logger.info(`⭐ نجم الأسبوع (${team}): <@${winner.userId}> (${winner.points} نقطة).`);
+        await dm(client, winner.userId, { embeds: [embed('⭐ نجم الأسبوع!', `تهانينا! فزت بلقب **نجم الأسبوع** في فريق ${team === 'support' ? 'الدعم الفني' : 'الإشراف'} وحصلت على **+10 نقاط**.`, COLORS.success)] });
+      }
+    }
+  }
+  logger.info(`⭐ نجم الأسبوع: مُنح لـ ${granted} فائز.`);
+}
+
+/**
+ * الأفضل في الشهر: يختار أفضل إداري (دعم/إشراف) ويمنح +50 best_month.
+ *
+ * الشروط:
+ *  - الحد الأدنى 20 يوم نشاط في الشهر (activity_logs أياماً مميزة)
+ *  - لا فوز متتaill (لم يفز بالشهر الماضي)
+ *  - ليس في إجازة/تجربة/حالة مستثناة
+ * يعمل أول كل شهر (0 11 1 * *) قبل التقرير الشهري.
+ */
+async function monthlyBest(client) {
+  const currentMonth = today().slice(0, 7);
+  const period = clock.previousMonth(currentMonth);
+  const monthStart = `${period}-01`;
+  const monthEnd = addDays(`${currentMonth}-01`, -1);
+  const db = getDb();
+  const onLeave = activeLeaveUsers();
+
+  const candidates = [];
+  for (const m of staffService.all()) {
+    if (EXEMPT.includes(m.status)) continue;
+    if (m.status === 'probation') continue;
+    if (onLeave.has(String(m.user_id))) continue;
+
+    // عدد أيام النشاط المميزة في الشهر (قنوات العمل فقط)
+    const activeDays = db.prepare(`
+      SELECT COUNT(DISTINCT day) d FROM activity_logs
+      WHERE user_id = ? AND day >= ? AND day <= ? AND channel_type != 'general'
+    `).get(m.user_id, monthStart, monthEnd).d;
+
+    if (activeDays < 20) continue; // حد أدنى 20 يوم
+
+    // رصيد النقاط في الشهر للعصر الحالي
+    const { start, endExclusive } = clock.dayWindow(monthStart, monthEnd) || {};
+    if (!start) continue;
+    const sum = db.prepare(`
+      SELECT COALESCE(SUM(points), 0) total FROM promotion_points
+      WHERE user_id = ? AND rank_epoch = ? AND created_at >= ? AND created_at < ?
+    `).get(m.user_id, m.rank_epoch ?? 0, start, endExclusive).total;
+
+    if (Number(sum) > 0) {
+      candidates.push({ userId: m.user_id, team: m.team, points: Number(sum), rank: m.rank, activeDays });
+    }
+  }
+
+  if (!candidates.length) {
+    logger.info('🏅 الأفضل في الشهر: لا يوجد مرشحون (الحد الأدنى 20 يوم نشاط).');
+    return;
+  }
+
+  // أفضل لكل فريق
+  const byTeam = { support: [], moderation: [] };
+  for (const c of candidates) {
+    if (byTeam[c.team]) byTeam[c.team].push(c);
+  }
+
+  let granted = 0;
+  for (const team of ['support', 'moderation']) {
+    const teamCandidates = byTeam[team].sort((a, b) => b.points - a.points);
+    if (!teamCandidates.length) continue;
+
+    const winner = teamCandidates[0];
+
+    // تحقق من عدم الفوز المتتالي: هل فاز بالشهر الماضي؟
+    const prevMonth = addDays(monthStart, -1).slice(0, 7);
+    const prevMonthStart = `${prevMonth}-01`;
+    const prevMonthEnd = addDays(monthStart, -1);
+    const { start: ps, endExclusive: pe } = clock.dayWindow(prevMonthStart, prevMonthEnd) || {};
+    let consecutive = false;
+    if (ps) {
+      const lastWin = db.prepare(`
+        SELECT 1 FROM promotion_points
+        WHERE user_id = ? AND reason_key = 'best_month' AND created_at >= ? AND created_at < ?
+        LIMIT 1
+      `).get(winner.userId, ps, pe);
+      consecutive = !!lastWin;
+    }
+
+    if (consecutive && teamCandidates.length > 1) {
+      const runnerUp = teamCandidates[1];
+      const r = points.add({ userId: runnerUp.userId, reasonKey: 'best_month', refType: 'month', refId: monthStart, addedBy: 'auto' });
+      if (r.ok) {
+        granted++;
+        logger.info(`🏅 الأفضل في الشهر (${team}): <@${runnerUp.userId}> (${runnerUp.points} نقطة، ${runnerUp.activeDays} يوم نشاط) — الفائز السابق مُستثنى.`);
+        await dm(client, runnerUp.userId, { embeds: [embed('🏅 الأفضل في الشهر!', `تهانينا! فزت بلقب **الأفضل في الشهر** في فريق ${team === 'support' ? 'الدعم الفني' : 'الإشراف'} وحصلت على **+50 نقاط**.`, COLORS.success)] });
+      }
+    } else {
+      const r = points.add({ userId: winner.userId, reasonKey: 'best_month', refType: 'month', refId: monthStart, addedBy: 'auto' });
+      if (r.ok) {
+        granted++;
+        logger.info(`🏅 الأفضل في الشهر (${team}): <@${winner.userId}> (${winner.points} نقطة، ${winner.activeDays} يوم نشاط).`);
+        await dm(client, winner.userId, { embeds: [embed('🏅 الأفضل في الشهر!', `تهانينا! فزت بلقب **الأفضل في الشهر** في فريق ${team === 'support' ? 'الدعم الفني' : 'الإشراف'} وحصلت على **+50 نقاط**.`, COLORS.success)] });
+      }
+    }
+  }
+  logger.info(`🏅 الأفضل في الشهر: مُنح لـ ${granted} فائز.`);
+}
+
+/**
+ * عقوبة الغياب: يطبق -50 absence_10d لكل إداري غاب 10 أيام متتالية بلا إجازة.
+ *
+ * يتحقق من: لا نشاط في activity_logs لآخر 10 أيام، ولا إجازة نشطة، وليس مستثنى.
+ * المرجع اليومي (refType='absence', refId=YYYY-MM-DD) يضمن تطبيق العقوبة مرة واحدة لكل فترة غياب.
+ */
+async function absencePenalty(client) {
+  const t = today();
+  const tenDaysAgo = addDays(t, -10);
+  const db = getDb();
+  const onLeave = activeLeaveUsers();
+
+  let applied = 0;
+  for (const m of staffService.all()) {
+    if (EXEMPT.includes(m.status)) continue;
+    if (m.status === 'probation' && m.probation_exempt) continue;
+    if (onLeave.has(String(m.user_id))) continue;
+
+    // هل لديه نشاط في آخر 10 أيام؟
+    const recentActivity = db.prepare(`
+      SELECT 1 FROM activity_logs
+      WHERE user_id = ? AND day >= ? AND day <= ? LIMIT 1
+    `).get(m.user_id, tenDaysAgo, t);
+
+    if (recentActivity) continue; // لديه نشاط حديث
+
+    // هل لديه إجازة نشطة في الفترة؟
+    const hasLeave = db.prepare(`
+      SELECT 1 FROM leave_requests
+      WHERE user_id = ? AND status = 'approved' AND start_date <= ? AND end_date >= ?
+      LIMIT 1
+    `).get(m.user_id, t, tenDaysAgo);
+    if (hasLeave) continue;
+
+    // هل سبق تطبيق العقوبة لهذه الفترة؟ (refId = تاريخ اليوم)
+    const already = db.prepare(`
+      SELECT 1 FROM promotion_points
+      WHERE user_id = ? AND reason_key = 'absence_10d' AND ref_type = 'absence' AND ref_id = ?
+      LIMIT 1
+    `).get(m.user_id, t);
+    if (already) continue;
+
+    const r = points.add({ userId: m.user_id, reasonKey: 'absence_10d', refType: 'absence', refId: t, addedBy: 'auto' });
+    if (r.ok) {
+      applied++;
+      logger.warn(`📉 عقوبة غياب: <@${m.user_id}> (${m.rank}) — 10 أيام بلا نشاط ولا إجازة.`);
+      await dm(client, m.user_id, { embeds: [embed('📉 عقوبة غياب', `لم يُرصد أي نشاط منك منذ **10 أيام** ولم تقدم طلب إجازة. تم خصم **50 نقطة** من رصيدك.`, COLORS.danger)] });
+      await sendToChannel(client, 'staff-alerts', { embeds: [embed('📉 عقوبة غياب', `<@${m.user_id}> (${m.rank}) — 10 أيام بلا نشاط ولا إجازة. تم خصم 50 نقطة.`, COLORS.danger)] });
+    }
+  }
+  if (applied) logger.info(`📉 عقوبة الغياب: طُبقت على ${applied} إداري.`);
+}
+
+/**
+ * تنظيف تجميد النقاط المنتهي: يزيل صفوف point_freezes التي انتهت مدتها.
+ *
+ * يعمل يومياً لضمان أن isFrozen() لا تعيد نتائج قديمة.
+ * ملاحظة: isFrozen() تتحقق من انتهاء الصلاحية وتعيد {frozen:false, expired:true}،
+ * لكن التنظيف الدوري يبقي الجدول نظيفاً.
+ */
+async function freezeCleanup(client) {
+  const db = getDb();
+  const result = db.prepare(`DELETE FROM point_freezes WHERE until <= ?`).run(clock.nowIso());
+  if (result.changes > 0) {
+    logger.info(`🧹 تنظيف التجميد: أُزيل ${result.changes} تجميد منتهي.`);
+  }
 }
 
 /**
@@ -748,6 +1068,12 @@ function start(client) {
     ['weekly-report', '0 10 * * 5', () => weeklyReport(client)],
     ['monthly-report', '0 11 1 * *', () => monthlyReport(client)],
     ['maintenance', '0 3 1 * *', () => retention.run({ dryRun: false })],
+    // ===== نقاط الصيانة =====
+    ['daily-presence', '5 0 * * *', () => dailyPresence(client)],
+    ['weekly-star', '0 9 * * 5', () => weeklyStar(client)],
+    ['monthly-best', '0 10 1 * *', () => monthlyBest(client)],
+    ['absence-penalty', '0 1 * * *', () => absencePenalty(client)],
+    ['freeze-cleanup', '0 2 * * *', () => freezeCleanup(client)],
   ];
   JOBS.length = 0;
   // toggle معلن حتى يعرف /status أن المهمة مربوطة بمفتاح تبديل (أو غير مربوطة).
@@ -778,6 +1104,8 @@ function stop() {
 module.exports = {
   start, stop, status, bootstrap, checkAbsence, liftSuspensions, processLeaves,
   processResignations, processTaskReminders, dailyReport, weeklyReport, weeklyReportData, monthlyReport,
+  // نقاط الصيانة
+  dailyPresence, weeklyStar, monthlyBest, absencePenalty, freezeCleanup,
   JOBS, JOB_TOGGLES, jobEnabled, clearRunningTasks,
   TASK_REMINDER_MAX_ATTEMPTS, reminderGiveUps, SCHEMA_FAULT_JOB,
 };

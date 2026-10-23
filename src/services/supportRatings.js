@@ -5,6 +5,7 @@ const staff = require('./staff');
 const { messageParts } = require('./ticketLogs');
 const { normalizeDigits, nowIso } = require('../utils');
 const audit = require('./audit');
+const points = require('./points');
 
 function normalize(text) {
   return normalizeDigits(text).replace(/[أإآ]/g, 'ا').replace(/[\u064B-\u065F\u0670ـ]/g, '')
@@ -60,7 +61,18 @@ function record(input) {
     if (!result.changes) return { duplicate: true };
     audit.record({ action: 'support_rating_imported', actorId: input.botId, targetId: input.staffId, channelId: input.channelId,
       details: { ratingId: Number(result.lastInsertRowid), stars: input.stars, reviewerId: input.reviewerId, sourceMessageId: input.messageId } });
-    return { saved: true, id: Number(result.lastInsertRowid) };
+
+    // منح النقاط بناءً على عدد النجوم
+    let earned = 0;
+    if (input.stars >= 4) {
+      const r = points.add({ userId: input.staffId, reasonKey: 'rating_positive', refType: 'rating', refId: input.messageId, addedBy: input.botId });
+      if (r.ok) earned += r.points;
+    } else if (input.stars <= 2) {
+      const r = points.add({ userId: input.staffId, reasonKey: 'rating_negative', refType: 'rating', refId: input.messageId, addedBy: input.botId });
+      if (r.ok) earned += r.points;
+    }
+
+    return { saved: true, id: Number(result.lastInsertRowid), earned };
   })();
 }
 

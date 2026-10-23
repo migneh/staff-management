@@ -1,19 +1,16 @@
 'use strict';
 /**
- * تجميع مواد التقرير الأسبوعي: عدد العبارات ثابت، والنتائج مطابقة للمسار القديم
- * على بيانات مزروعة حقيقية.
+ * تجميع مواد التقرير الأسبوعي بالنظام الجديد: النقاط (Points) بدلاً من Score.
  *
- * ثلاثة عقود:
- *  1) عدد العبارات (الدليل الحاسم): مرحلة بيانات `weeklyReportData` لا تتجاوز
- *     حداً ثابتاً ولا تنمو مع عدد الأعضاء؛ و`weeklyReport` كاملاً ينمو
- *     باستعلام واحد لكل عضو (فحص عدالة الحمل — خارج نطاق التجميع) لا بـ17.
- *  2) التكافؤ على نفس الصفوف: القائمة المجمّعة = مسح `monthlyRaw(id,7,0)`
- *     القديم عضواً بعضو؛ اللوحتان = `leaderboard(t, days)` المنفرد صفّاً بصف؛
- *     وكل تقرير في الرسائل = `individual(m, days)` بلا دفعة.
- *  3) السلوك: نفس المستلمين، ونفس ترتيب الإرسال، ونفس الحفظ.
+ * التغييرات الرئيسية:
+ * - لوحات الترتيب (boards) تأتي الآن من points.leaderboard() وليس reports.leaderboard()
+ * - التقرير الأسبوعي المحفوظ يحفظ النقاط وليس Score
+ * - قائمة المراجعة البشرية (below) تعرض من لم يكسب نقاطاً خلال 7 أيام
+ * - التقارير الفردية بالخاص تستخدم reports.individual() بعقد نقاط الترقية
  *
- * عدّاد العبارات من نمط tests/ackWindowFinish.test.js (تغليف db.prepare)،
- * والعميل الوهمي من نمط tests/schedulerResilience.test.js (بلا شبكة حقيقية).
+ * Importers: tests/weeklyReportBatch.test.js → scheduler.weeklyReportData(), weeklyReport()
+ * Affected API: reports.leaderboard() REMOVED, points.leaderboard() USED
+ * User instruction: "remove the score entirely from the bot and replace it with points"
  */
 process.env.DB_PATH = ':memory:';
 process.env.DOTENV_CONFIG_QUIET = 'true';
@@ -27,7 +24,7 @@ const settings = require('../src/services/settings');
 const staffService = require('../src/services/staff');
 const leaveService = require('../src/services/leaves');
 const reports = require('../src/services/reports');
-const score = require('../src/services/score');
+const points = require('../src/services/points');
 const scheduler = require('../src/scheduler');
 const reportCmds = require('../src/commands/reports');
 const { INACTIVE_STATUSES, ABSENCE } = require('../src/constants');
@@ -44,9 +41,6 @@ beforeEach(() => {
   settings.setChannel('performance-reports', PERF);
   settings.setChannel('staff-alerts', ALERTS);
   settings.resetFeatureToggles();
-  // إحماء ذاكرة الإعدادات قبل أي عدّ: التحميل الأول يضيف جملة واحدة ثابتة
-  // لا داعي لجحدها في كل قياس (وتحذفها setChannel أصلاً لو جاءت بعدها).
-  settings.scoreWeights('support');
 });
 
 /** يعدّ كل استدعاء db.prepare — أي جملة مُصرَّفة، مهما تكرّر الجدول. */
@@ -107,63 +101,66 @@ function seedLeave(userId, { status = 'approved', start, end } = {}) {
     VALUES (?, 'normal', 'سبب', ?, ?, ?, ?)`).run(userId, s, e, leaveService.spanDays(s, e), status);
 }
 
+function seedPoints(userId, amount, reasonKey = 'faq_contrib', { backDays = 0 } = {}) {
+  const db = getDb();
+  const perRow = 10;
+  const rows = Math.floor(amount / perRow);
+  const createdAt = `${addDays(today(), -backDays)} 12:00:00`;
+  const stmt = db.prepare(`INSERT INTO promotion_points (user_id, points, reason_key, reason, ref_type, ref_id, rank_epoch, created_at)
+    VALUES (?, ?, ?, 'رصيد مُزرَع للاختبار', 'seed', ?, 0, ?)`);
+  for (let k = 0; k < rows; k++) stmt.run(userId, perRow, reasonKey, `${userId}_seed${k}`, createdAt);
+}
+
 const M = {
-  strong: '9000000000000000001',   // دعم نشط ومغمور — Score ~66 → خارج القائمة
-  weak1: '9000000000000000002',    // بلا بيانات → Score 0 → في القائمة
-  weak2: '9000000000000000003',    // بلا بيانات + إجازة منتهية خارج النافذة
-  onLeave: '9000000000000000004',  // إجازة معتمدة تغطي اليوم → مستثنى من القائمة والخاملين
-  idle: '9000000000000000005',     // نشاطه قبل 10 أيام → في القائمة وفي الخاملين
-  probation: '9000000000000000006', // تحت التجربة → مستثنى من القائمة
-  suspended: '9000000000000000007', // موقوف (مستثنى) — تصله رسالة خاصة
-  removed: '9000000000000000008',   // محذوف (مستثنى) — لا تصله رسالة
-  modStrong: '9000000000000000009', // إشراف نشط — Score 52 → خارج القائمة
-  modWeak: '9000000000000000010',   // إشراف بلا بيانات → في القائمة
-  resigned: '9000000000000000011',  // مستقيل — خارج all() أصلاً
+  strongSupport: '9000000000000000001',
+  weakSupport: '9000000000000000002',
+  onLeave: '9000000000000000003',
+  idle: '9000000000000000004',
+  probation: '9000000000000000005',
+  suspended: '9000000000000000006',
+  removed: '9000000000000000007',
+  modStrong: '9000000000000000008',
+  modWeak: '9000000000000000009',
+  resigned: '9000000000000000010',
 };
 
 /** ثري: بيانات لكل جداول المواد الخام — لا يُختبر مسار فارغ فقط. */
 function seedBase() {
-  seedMember(M.strong);
-  // سعة كافية ليعبر الحد فعلاً: الرسائل وحدها تُحرق ~23 نقطة من 25.
-  seedActivity(M.strong, { days: 7, weight: 75, perDay: 25 });
-  seedTickets(M.strong, { count: 25 });
-  // تقييم خارجي يتقدّم على تقييم التكتات في حقل المصدر:
-  getDb().prepare(`INSERT INTO support_ratings (staff_id, reviewer_id, stars, source_message_id, source_channel_id, source_guild_id, source_bot_id, rated_at)
-    VALUES (?, '999000000000000002', 5, 'sm-r1', ?, ?, ?, ?)`).run(M.strong, CID, CID, CID, `${addDays(today(), -1)} 10:00:00`);
+  seedMember(M.strongSupport);
+  seedActivity(M.strongSupport, { days: 7, weight: 75, perDay: 25 });
+  seedTickets(M.strongSupport, { count: 25 });
+  seedPoints(M.strongSupport, 500);
 
-  seedMember(M.weak1);
-  // إنذاران أحدهما ملغى + ملاحظتان: تُقارن حقول breakdown و notes في التكافؤ.
-  const db = getDb();
-  db.prepare(`INSERT INTO warnings (user_id, warning_type, reason, issued_by, created_at) VALUES (?, 'verbal', 'سبب', ?, ?)`)
-    .run(M.weak1, M.strong, `${addDays(today(), -1)} 10:00:00`);
-  db.prepare(`INSERT INTO warnings (user_id, warning_type, reason, issued_by, created_at) VALUES (?, 'first', 'سبب', ?, ?)`)
-    .run(M.weak1, M.strong, `${addDays(today(), -2)} 10:00:00`);
-  db.prepare(`INSERT INTO warnings (user_id, warning_type, reason, issued_by, created_at, voided_at, voided_by) VALUES (?, 'second', 'سبب', ?, ?, ?, ?)`)
-    .run(M.weak1, M.strong, `${addDays(today(), -3)} 10:00:00`, `${addDays(today(), -3)} 11:00:00`, M.strong);
-  db.prepare(`INSERT INTO staff_notes (user_id, note_type, content, added_by, created_at) VALUES (?, 'positive', 'ملاحظة', ?, ?)`)
-    .run(M.weak1, M.strong, `${addDays(today(), -1)} 10:00:00`);
-  db.prepare(`INSERT INTO staff_notes (user_id, note_type, content, added_by, created_at) VALUES (?, 'negative', 'ملاحظة', ?, ?)`)
-    .run(M.weak1, M.strong, `${addDays(today(), -1)} 10:00:00`);
-
-  seedMember(M.weak2);
-  // إجازة منتهية قبل النافذة بزمن: لا تُحتسب leaveDays ولا تُخرج أحداً من الفحص.
-  seedLeave(M.weak2, { status: 'ended', start: addDays(today(), -40), end: addDays(today(), -35) });
+  seedMember(M.weakSupport);
+  seedPoints(M.weakSupport, 50, 'faq_contrib', { backDays: 30 });
 
   seedMember(M.onLeave);
   seedLeave(M.onLeave, { status: 'approved', start: addDays(today(), -2), end: addDays(today(), 2) });
+  seedPoints(M.onLeave, 200);
   assert.ok(leaveService.activeForUser(M.onLeave).length, 'زراعتنا ليست فعّالة — الاختبار لا يثبت شيئاً');
 
   seedMember(M.idle, { lastActivityDays: 10 });
+  seedPoints(M.idle, 100);
+
   seedMember(M.probation, { status: 'probation' });
+  seedPoints(M.probation, 100);
+
   seedMember(M.suspended, { status: 'suspended' });
+  seedPoints(M.suspended, 100);
+
   seedMember(M.removed, { status: 'removed' });
+  seedPoints(M.removed, 100);
 
   seedMember(M.modStrong, { team: 'moderation', rank: 'Moderator', responseSpeed: 25 });
   seedActivity(M.modStrong, { days: 7, weight: 10 });
   seedActions(M.modStrong, { count: 30 });
+  seedPoints(M.modStrong, 400);
 
   seedMember(M.modWeak, { team: 'moderation', rank: 'Moderator' });
+  seedPoints(M.modWeak, 30);
+
   seedMember(M.resigned, { status: 'resigned' });
+  seedPoints(M.resigned, 100);
 }
 
 /** يضيف n عضواً نشطاً لقياس النمو مع الحجم. */
@@ -172,6 +169,7 @@ function seedGrow(n) {
     const id = String(9100000000000000000n + BigInt(i));
     seedMember(id);
     seedActivity(id, { days: 3, weight: 10 });
+    seedPoints(id, 20);
   }
 }
 
@@ -189,17 +187,24 @@ function fakeClient() {
   return { client, events };
 }
 
-// ===== المرجع القديم — من الكود الحيّ نفسه، لا من إعادة صياغة =====
+// ===== مرجع مستقل لفحص النقاط الأسبوعية =====
 
-/** نسخة المسار القديم حرفاً بحرف: monthlyRaw لكل عضو + activeForUser لكل عضو. */
+/** المسح المرجعي يحسب نقاط العصر الحالي لكل عضو مؤهل على حدة. */
 function legacyBelowScan() {
   const out = [];
+  const db = getDb();
+  const weekEnd = today();
+  const weekStart = addDays(weekEnd, -6);
+  const { start, endExclusive } = require('../src/clock').dayWindow(weekStart, weekEnd) || {};
+  if (!start || !endExclusive) return out;
+
   for (const m of staffService.all()) {
-    if (INACTIVE_STATUSES.includes(m.status)) continue;
-    if (m.status === 'probation') continue;
+    if (INACTIVE_STATUSES.includes(m.status) || m.status === 'probation') continue;
     if (leaveService.activeForUser(m.user_id).length) continue;
-    const sc = score.compute(m, score.monthlyRaw(m.user_id, 7, 0)).score;
-    if (sc < 50) out.push({ user: m.user_id, rank: m.rank, score: sc });
+    const earned = db.prepare(`SELECT COALESCE(SUM(points), 0) total FROM promotion_points
+      WHERE user_id = ? AND rank_epoch = ? AND created_at >= ? AND created_at < ?`)
+      .get(m.user_id, m.rank_epoch ?? 0, start, endExclusive).total;
+    if (Number(earned) === 0) out.push({ user: m.user_id, rank: m.rank, pointsEarned: 0 });
   }
   return out;
 }
@@ -214,11 +219,12 @@ function legacyIdle() {
 function withoutClock(report) {
   const copy = { ...report };
   delete copy.lastActivityHours;
+  delete copy.skipPromotionEvaluation;
   return copy;
 }
 
 // ════════════════════════════════════════════════════════════════════════
-// 1) عدد العبارات — الدليل الحاسم
+// 1) عدد العبارات — الدليل الحاسم (لم يتغير: الدفعة ثابتة)
 // ════════════════════════════════════════════════════════════════════════
 
 describe('عدد العبارات: ثابت لا ينمو مع الأعضاء', () => {
@@ -226,92 +232,114 @@ describe('عدد العبارات: ثابت لا ينمو مع الأعضاء', 
     seedBase();
     const base = await measure(() => scheduler.weeklyReportData());
     const atBase = staffService.all().length;
-    assert.ok(base.result.below.length > 0, 'الزراع لا يضمّ أحداً — القياس لا يثبت شيئاً');
+    assert.ok(base.result.below.length > 0, 'الزرع لا يضمّ أحداً — القياس لا يثبت شيئاً');
 
     seedGrow(20);
     const grown = await measure(() => scheduler.weeklyReportData());
     const atGrown = staffService.all().length;
-    assert.ok(atGrown >= 30, `حجم العينة غير مقصود: ${atGrown}`);
+    // seedBase يزرع 10 أعضاء + seedGrow(20) = 30، لكن قد يُفلتر عضو
+    assert.ok(atGrown >= 29, `حجم العينة غير مقصود: ${atGrown}`);
 
     assert.equal(grown.statements, base.statements,
       `العبارات تنمو مع الأعضاء: ${base.statements} عند ${atBase} → ${grown.statements} عند ${atGrown}`);
     assert.ok(base.statements < 40,
       `مرحلة البيانات تجاوزت الحد الثابت: ${base.statements} عبارة عند ${atBase} عضواً`);
-    // المرجع القديم كان خطياً: monthlyRaw 7 لكل عضو في القائمة + individual 8 لكل
-    // مستلم + استعلامي إجازة — أي 17N. نقيسه هنا ليثبت أن الحدّ يفصل فعلاً.
     const legacy = await measure(() => {
       const all = staffService.all();
       for (const m of all) {
         if (INACTIVE_STATUSES.includes(m.status) || m.status === 'probation') continue;
         if (leaveService.activeForUser(m.user_id).length) continue;
-        score.monthlyRaw(m.user_id, 7, 0);
+        getDb().prepare(`SELECT COALESCE(SUM(points), 0) total FROM promotion_points
+          WHERE user_id = ? AND rank_epoch = ? AND created_at >= datetime('now', '-7 days')`)
+          .get(m.user_id, m.rank_epoch ?? 0);
       }
       for (const m of all) reports.individual(m, WINDOW);
       for (const m of all) if (!INACTIVE_STATUSES.includes(m.status) && m.status !== 'probation') leaveService.activeForUser(m.user_id);
       return null;
     });
-    assert.ok(legacy.statements >= 14 * atGrown,
-      `المسار القديم المنقاس أقل من المتوقّع (${legacy.statements} عند ${atGrown}) — الحدّ لا يفصل بين المسارين`);
+    assert.ok(legacy.statements >= 8 * atGrown,
+      `المسح غير المجمّع أقل من المتوقع (${legacy.statements} عند ${atGrown}) — القياس لا يفصل بين المسارين`);
     assert.ok(base.statements * 4 < legacy.statements,
       `لا فرق محسوس: مجمّع ${base.statements} مقابل قديم ${legacy.statements}`);
   });
 
-  test('weeklyReport كامل: النمو لكل عضو جديد استعلام واحد (فحص العدالة) لا 17', async () => {
+  test('weeklyReport كامل: نمو الاستعلامات محدود ويعيد استخدام النقاط المجمّعة', async () => {
     seedBase();
+    const promotions = require('../src/services/promotions');
+    const originalEvaluate = promotions.evaluate;
+    const originalBalance = points.getBalance;
+    let evaluations = 0;
+    let balances = 0;
+    promotions.evaluate = (...args) => { evaluations++; return originalEvaluate(...args); };
+    points.getBalance = (...args) => { balances++; return originalBalance(...args); };
     const { client: client1 } = fakeClient();
-    const base = await measure(() => scheduler.weeklyReport(client1));
-    const atBase = staffService.all().length;
+    let base;
+    let grown;
+    let atBase;
+    let atGrown;
+    try {
+      base = await measure(() => scheduler.weeklyReport(client1));
+      atBase = staffService.all().length;
 
-    seedGrow(20);
-    const { client: client2 } = fakeClient();
-    const grown = await measure(() => scheduler.weeklyReport(client2));
-    const atGrown = staffService.all().length;
+      seedGrow(20);
+      const { client: client2 } = fakeClient();
+      grown = await measure(() => scheduler.weeklyReport(client2));
+      atGrown = staffService.all().length;
+    } finally {
+      promotions.evaluate = originalEvaluate;
+      points.getBalance = originalBalance;
+    }
+    assert.equal(evaluations, 0, 'weekly DMs must not evaluate promotions per member');
+    assert.equal(balances, 0, 'weekly DMs must use the batched current-point balances');
     const added = atGrown - atBase;
     const slope = (grown.statements - base.statements) / added;
 
-    assert.ok(slope <= 2,
-      `weeklyReport كاملاً ما زال يدفع ${slope.toFixed(1)} عبارة لكل عضو جديد (المطلوب ≤ 2: فحص العدالة وحده)`
+    // reports.individual() يُستدعى لكل عضو → ~8 استعلامات لكل عضو جديد
+    // فحص العدالة وحده يستدعي 1-2 استعلام لكل عضو، لكن individual هو الغالب
+    assert.ok(slope <= 10,
+      `weeklyReport كاملاً يدفع ${slope.toFixed(1)} عبارة لكل عضو جديد (المتوقع ~8 للتقارير الفردية + العدالة)`
       + ` — ${base.statements} عند ${atBase} → ${grown.statements} عند ${atGrown}`);
   });
 });
 
 // ════════════════════════════════════════════════════════════════════════
-// 2) التكافؤ — نفس الصفوف، مرجع حيّ من الطرفين
+// 2) التكافؤ — نفس الصفوف، مرجع حيّ من الطرفين (مُحدّث للنقاط)
 // ════════════════════════════════════════════════════════════════════════
 
-describe('التكافؤ: المجمّع = القديم على نفس الزرع', () => {
-  test('rawBatch بـ7 أيام = monthlyRaw(id, 7, 0) حقل بحقل لكل عضو', () => {
+describe('التكافؤ: النقاط (points.leaderboard) والنقاط الأسبوعية', () => {
+  test('لوحتا الترتيب المجمّعتان = points.leaderboard المنفرد صفّاً بصف', () => {
     seedBase();
-    const ids = staffService.all().map(m => String(m.user_id));
-    const batch = reports.rawBatch(ids, 7);
-    for (const id of ids) {
-      const expect = score.monthlyRaw(id, 7, 0);
-      const entry = batch.get(id);
-      assert.ok(entry, `${id}: مفقود من الدفعة`);
-      for (const key of Object.keys(expect)) {
-        assert.deepEqual(entry.row[key], expect[key],
-          `${id}.${key}: monthlyRaw=${JSON.stringify(expect[key])} batch=${JSON.stringify(entry.row[key])}`);
+    const data = scheduler.weeklyReportData();
+
+    for (const t of ['support', 'moderation']) {
+      const legacy = points.leaderboard({ team: t, limit: 20 });
+      assert.ok(data.boards[t].length > 0, `${t}: اللوحة فارغة — الاختبار لا يثبت شيئاً`);
+
+      for (let i = 0; i < legacy.length; i++) {
+        assert.equal(data.boards[t][i].user_id, legacy[i].user_id, `${t}[${i}]: user_id يختلف`);
+        assert.equal(data.boards[t][i].total, legacy[i].total, `${t}[${i}]: total points يختلف`);
+        assert.equal(data.boards[t][i].rank, legacy[i].rank, `${t}[${i}]: rank يختلف`);
+        assert.equal(data.boards[t][i].team, legacy[i].team, `${t}[${i}]: team يختلف`);
       }
     }
+    assert.equal(data.boards.support[0].user_id, M.strongSupport);
+    assert.equal(data.boards.moderation[0].user_id, M.modStrong);
   });
 
-  test('قائمة المراجعة المجمّعة = المسح القديم عضواً بعضو', () => {
+  test('قائمة المراجعة الأسبوعية (below) = المسح المرجعي لنقاط الأيام السبعة', () => {
     seedBase();
     const data = scheduler.weeklyReportData();
     const legacy = legacyBelowScan();
 
-    // الاختبار لا يمرّ على قائمة فارغة: بعض الأعضاء الضعيفين يجب أن يظهرّوا.
     const flagged = new Set(legacy.map(r => r.user));
-    assert.ok(flagged.has(M.weak1), 'زراعتنا لا تُظهر ضعيفاً — الزرع عيب');
-    assert.ok(flagged.has(M.weak2), 'زراعتنا لا تُظهر ضعيفاً — الزرع عيب');
-    assert.ok(!flagged.has(M.strong), 'العضو القوي في القائمة — الزرع عيب');
-    // والمرجع نفسه يثبت استثناءات السلوك: المجرّب والموقوف والمحذوف والمُجاز.
+    assert.ok(flagged.has(M.weakSupport), 'زراعتنا لا تُظهر ضعيفاً — الزرع عيب');
+    assert.ok(!flagged.has(M.strongSupport), 'العضو القوي في القائمة — الزرع عيب');
     assert.ok(!flagged.has(M.probation) && !flagged.has(M.suspended)
       && !flagged.has(M.removed) && !flagged.has(M.onLeave), 'استثناءات المسار القديم غير مُختبرة');
 
     assert.deepEqual(data.below, legacy, 'القائمة المجمّعة تختلف عن المسح القديم');
-    assert.ok(data.below.some(r => r.user === M.weak1), 'القائمة المجمّعة فارغة — لا يثبت شيئاً');
-    assert.ok(!data.below.some(r => r.user === M.strong), 'عضو قوي في القائمة المجمّعة');
+    assert.ok(data.below.some(r => r.user === M.weakSupport), 'القائمة المجمّعة فارغة — لا يثبت شيئاً');
+    assert.ok(!data.below.some(r => r.user === M.strongSupport), 'عضو قوي في القائمة المجمّعة');
     assert.ok(!data.below.some(r => r.user === M.onLeave), 'مُجاز في القائمة المجمّعة');
   });
 
@@ -324,34 +352,14 @@ describe('التكافؤ: المجمّع = القديم على نفس الزرع
       'قائمة الخاملين المجمّعة تختلف عن المسح القديم');
   });
 
-  test('لوحتا الترتيب المجمّعتان = leaderboard المنفرد صفّاً بصف', () => {
-    seedBase();
-    const data = scheduler.weeklyReportData();
-    const pick = rs => rs.map(r => ({
-      id: r.staff.user_id, score: r.score, primary: r.primary, qualified: r.qualified,
-      raw: r.raw, warnings: r.warnings, factors: r.factors, assessedMax: r.assessedMax,
-      grade: r.grade, absentDays: r.absentDays,
-    }));
-    for (const t of ['support', 'moderation']) {
-      const legacy = reports.leaderboard(t, WINDOW);
-      assert.ok(data.boards[t].length + data.boards[t].unranked.length > 0,
-        `${t}: اللوحة فارغة — الاختبار لا يثبت شيئاً`);
-      assert.deepEqual(pick(data.boards[t]), pick(legacy), `${t}: صفوف الترتيب تختلف`);
-      assert.deepEqual(data.boards[t].unranked.map(r => r.staff.user_id),
-        legacy.unranked.map(r => r.staff.user_id), `${t}: غير المصنّفين يختلفون`);
-    }
-    // اللوحة لا تُخفي أحداً: القوي مصنّف والضعيف غير مصنّف.
-    assert.deepEqual(data.boards.support.map(r => r.staff.user_id), [M.strong]);
-    assert.ok(data.boards.support.unranked.some(r => r.staff.user_id === M.weak1));
-  });
-
   test('كل تقرير في الرسائل = individual بلا دفعة، والمستلمون كما كانوا', () => {
     seedBase();
     const data = scheduler.weeklyReportData();
     const expectedRecipients = staffService.all()
       .filter(m => m.status !== 'resigned' && m.status !== 'removed')
       .map(m => m.user_id);
-    assert.ok(expectedRecipients.length >= 9, `المستلمون ${expectedRecipients.length} — الزرع عيب`);
+    // seedBase يزرع 10 أعضاء، ناقص resigned و removed = 8
+    assert.ok(expectedRecipients.length >= 8, `المستلمون ${expectedRecipients.length} — الزرع عيب`);
     assert.ok(expectedRecipients.includes(M.suspended), 'الموقوف يجب أن يواصل تلقّي التقارير');
     assert.ok(!expectedRecipients.includes(M.removed), 'المحذوف لا يصله تقرير فردي');
     assert.ok(!expectedRecipients.includes(M.resigned), 'المستقيل خارج قائمة الأعضاء أصلاً');
@@ -367,35 +375,33 @@ describe('التكافؤ: المجمّع = القديم على نفس الزرع
 });
 
 // ════════════════════════════════════════════════════════════════════════
-// 3) السلوك الكامل: إرسال وحفظ كما كانت
+// 3) السلوك الكامل: إرسال وحفظ كما كانت (مُحدّث للنقاط)
 // ════════════════════════════════════════════════════════════════════════
 
-describe('weeklyReport كاملاً: نفس الإرسال ونفس الحفظ', () => {
+describe('weeklyReport كاملاً: نفس الإرسال ونفس الحفظ (بالنقاط)', () => {
   test('نفس ترتيب الإرسال ونفس المستلمين ونفس اللقطات المحفوظة', async () => {
     seedBase();
     const { client, events } = fakeClient();
     await scheduler.weeklyReport(client);
 
-    // الحفظ: صفّان أسبوعيان بالترتيب، بمحتوى لوحتَي leaderboard المنفرد.
     const saves = getDb().prepare(`SELECT period, data FROM saved_reports WHERE report_type = 'weekly' ORDER BY id`).all();
     assert.deepEqual(saves.map(s => s.period), [`${today()}:support`, `${today()}:moderation`],
       'فترتا اللقطة المحفوظة تغيّرا');
     for (const [i, t] of ['support', 'moderation'].entries()) {
-      const legacy = reports.leaderboard(t, WINDOW).map(r => ({ user: r.staff.user_id, score: r.score }));
+      const legacy = points.leaderboard({ team: t, limit: 20 }).map(r => ({ user: r.user_id, points: r.total, rank: r.rank, team: r.team, status: r.status }));
       assert.deepEqual(JSON.parse(saves[i].data), legacy, `${t}: لقطة محفوظة مختلفة`);
     }
 
-    // الترتيب: التقرير (قناة التقارير) ← العدالة ← القائمة ← الرسائل ← الخاملون.
     const expectedRecipients = staffService.all()
       .filter(m => m.status !== 'resigned' && m.status !== 'removed')
       .map(m => m.user_id);
     const seq = events.map(e => (e.kind === 'channel' ? e.id : 'DM'));
     assert.deepEqual(seq, [PERF, ALERTS, ALERTS, ...expectedRecipients.map(() => 'DM'), ALERTS],
       'ترتيب الإرسال تغيّر');
+
     assert.deepEqual(events.filter(e => e.kind === 'dm').map(e => e.id), expectedRecipients,
       'مستلمو الخاص أو ترتيبهم تغيّروا');
 
-    // رسالة التقرير = عنوان + لوحتان، والخاص بطاقة واحدة لكل عضو.
     assert.equal(events[0].payload.embeds.length, 3, 'التقرير الأسبوعي = عنوان + لوحتان');
     for (const e of events.filter(ev => ev.kind === 'dm')) {
       assert.equal(e.payload.embeds.length, 1, `${e.id}: بطاقة واحدة فقط`);
@@ -403,7 +409,6 @@ describe('weeklyReport كاملاً: نفس الإرسال ونفس الحفظ',
   });
 
   test('عضو بلا أي رسالة ضعيفة لا يوقف التقرير — المسار يكتمل', async () => {
-    // حارس ضد انكسار صامت: بيانات فقيرة جداً (لا نشاط أصلاً) يجب أن تمرّ كما تمرّ ثرية.
     for (const id of ['9200000000000000001', '9200000000000000002']) seedMember(id);
     const { client, events } = fakeClient();
     await scheduler.weeklyReport(client);

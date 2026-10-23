@@ -5,7 +5,6 @@ process.env.DOTENV_CONFIG_QUIET = 'true';
 const { test, describe, beforeEach } = require('node:test');
 const assert = require('node:assert');
 const { openMemoryDb, getDb } = require('../src/database');
-const score = require('../src/services/score');
 const load = require('../src/services/load');
 const reports = require('../src/services/reports');
 const settings = require('../src/services/settings');
@@ -34,22 +33,20 @@ describe('المرحلة 3 — شفافية وتقارير العمل', () => {
       VALUES ('trend', '1', 'staff', 1, date('now'), datetime('now'))`).run();
     db.prepare(`INSERT INTO activity_logs (user_id, channel_id, channel_type, weight, day, created_at)
       VALUES ('trend', '1', 'staff', 1, date('now', '-10 days'), datetime('now', '-10 days'))`).run();
-    const current = score.monthlyRaw(staff.user_id, 7);
-    const previous = score.monthlyRaw(staff.user_id, 7, 7);
+    db.prepare(`INSERT INTO activity_logs (user_id, channel_id, channel_type, weight, day, created_at)
+      VALUES ('trend', '2', 'staff', 1, date('now', '-11 days'), datetime('now', '-11 days'))`).run();
+    const current = reports.getRaw(staff.user_id, 7);
+    const previous = reports.getRaw(staff.user_id, 7, 7);
     assert.equal(current.messages, 1);
-    assert.equal(previous.messages, 1);
+    assert.equal(previous.messages, 2);
     const trend = reports.personalTrend(staff);
     assert.equal(trend.currentActiveDays, 1);
-    assert.equal(trend.previousActiveDays, 1);
+    assert.equal(trend.previousActiveDays, 2);
   });
 
-  test('يطبق أوزان Score المخصصة مع مجموع ثابت من 100', () => {
-    const staff = seedStaff('weighted', 'support', 'Support');
-    settings.setScoreWeights('support', { tickets: 50, speed: 10, chat: 20, presence: 20 });
-    const result = score.compute(staff, { messages: 200, activeDays: 26, tickets: 50, avgDuration: 4, avgRating: 4.6 });
-    assert.deepEqual(result.factors.map(f => f.max), [50, 10, 20, 20]);
-    assert.equal(result.assessedMax, 100);
-    assert.equal(result.score, 100);
+  test('واجهات أوزان Score القديمة غير متاحة', () => {
+    assert.equal(settings.scoreWeights, undefined);
+    assert.equal(settings.setScoreWeights, undefined);
   });
 
   test('يرسل تذكير التأهيل مرة واحدة ويميز المهمة عند نجاح الرسالة', async () => {
@@ -106,7 +103,7 @@ describe('المرحلة 3 — شفافية وتقارير العمل', () => {
     assert.ok(row.voided_at);
     assert.equal(reviewed.status, 'approved');
     // الإنذار الملغى لا يُحتسب في Score — وهذا أثره الفعلي بعد إزالة نظام النقاط.
-    assert.equal(score.monthlyRaw('warned').warnings, 0);
+    assert.equal(reports.getRaw('warned').warnings, 0);
   });
 
   test('يحسب حمل الفريق من التكتات والإجراءات ويستبعد التجربة', () => {
