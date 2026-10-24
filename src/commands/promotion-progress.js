@@ -1,6 +1,6 @@
 'use strict';
 const { SlashCommandBuilder } = require('discord.js');
-const { LEVELS, TEAMS, STATUS } = require('../constants');
+const { LEVELS, TEAMS, STATUS, POINTS_THRESHOLDS } = require('../constants');
 const settings = require('../services/settings');
 const staffService = require('../services/staff');
 const promotions = require('../services/promotions');
@@ -58,16 +58,24 @@ module.exports = {
           return `${statusIcon} **${check.label}**: ${actualValue} / ${check.required} ${checkBar}`;
         }).join('\n');
         
-        // Build embed
+        // عتبة النقاط الفهنية: العتبة الانتقالية المخفَّضة خلال نافذة 60 يوماً
+        // — نفس البوابة نفسها في services/promotions و/my-points، لا القيمة
+        // الخام القادمة بعد انتهاء النافذة — وإلا لرأى عضوٌ يعدّو فوق
+        // عتبة اليوم الفعلية بطاقة تقول «نقاطك لم تكتمل».
         const totalPoints = points.getBalance(userId);
-        const pointsThreshold = promoEval.rule ? require('../constants').POINTS_THRESHOLDS[member.team]?.[member.rank] : 0;
+        const baseThreshold = POINTS_THRESHOLDS[member.team]?.[member.rank] ?? null;
+        const effThreshold = baseThreshold != null
+          ? promotions.effectivePointsThreshold(baseThreshold, clock.today())
+          : null;
 
         const e = kit.card({
           title: `📈 تقدم الترقية: ${member.rank} → ${rule.to}`,
           description: `المتطلبات المكتملة: **${passedChecks}/${totalChecks}** (${progressPercent}%)`,
           fields: [
             { name: '⏱️ الوقت في الرتبة', value: `${arDigits(monthsInRank.toFixed(1))} شهر / ${rule.months} شهر` },
-            { name: '💯 نقاط الترقية', value: `**${arDigits(totalPoints)}** / ${arDigits(pointsThreshold || '—')}` },
+            { name: '💯 نقاط الترقية', value: effThreshold
+              ? `**${arDigits(totalPoints)}** / ${arDigits(effThreshold.threshold)}${effThreshold.transitional ? `+ (عتبة انتقالية — الكاملة ${arDigits(baseThreshold)} بعد ${arDigits(promotions.POINTS_TRANSITION_DAYS - effThreshold.day)} يوم)` : ''}`
+              : `**${arDigits(totalPoints)}** / —` },
             { name: '📋 متطلبات الترقية', value: requirementDetails.slice(0, 1024) },
           ],
           color: promoEval.eligible ? COLORS.success : COLORS.warning,
