@@ -889,8 +889,12 @@ async function absencePenalty(client) {
     // اليوم حتى يكون refId جديداً فتنطبق -50 مجدداً — خصم يومي متسلسل
     // تحت تعليق «مرة واحدة لكل فترة». الإمضاء الثابت يجعل الفترة صفّاً
     // واحداً مهما طالت: التكرار على نفس الإمضاء يصطدم بالفهرس الفريد.
-    const lastActive = db.prepare(`SELECT MAX(day) d FROM activity_logs WHERE user_id = ?`).get(m.user_id)?.d;
-    const anchor = (lastActive ? String(lastActive) : '')
+    // والمصدر هو العمود الدائم staff_members.last_activity لا MAX(day) من
+    // activity_logs: العمود يُدَّت مع كل رسالة إداري على التوازي مع سجل
+    // النشاط (touchActivity قبل activity.record) وهو خارج نطاق تقليم
+    // activity_logs (pruneActivity) — الجدول المقلَّم كان يذيب هويّة الفترة
+    // بمرور أشهر فيغيّر إمضاء فترة قُضي فيها سلفاً فتُخصم مرة أخرى.
+    const anchor = String(m.last_activity || '').slice(0, 10)
       || String(m.joined_at || '').slice(0, 10)
       || String(m.rank_since || '').slice(0, 10)
       || tenDaysAgo;
