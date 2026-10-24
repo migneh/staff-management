@@ -23,6 +23,7 @@ const modules = [
   require('./punishments'),
   require('./activity'),
   require('./my-status'),
+  require('./my-points'),
   require('./promotion-progress'),
   require('./config'),
   require('./staff-logs'),  // New: Staff logs system

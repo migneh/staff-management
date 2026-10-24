@@ -8,6 +8,33 @@ const settings = require('./settings');
 
 /** الحد الأدنى لنسبة التكتات المُقيَّمة قبل الاعتماد على المتوسط */
 const MIN_RATED_SHARE = PROBATION.minRatedShare;
+
+// ===== النافذة الانتقالية للنقاط (قرار المالك D7) =====
+// الانطلاقة صفرية: الشروط القديمة جرّت القاعدة على نظام سابق، وإداريوها
+// يبدؤون العصر الجديد بلا نقاط تاريخية — فالعتبة الكاملة تجعل الرتب غير
+// قابلة للوصول لأشهر. نافذة ستين يوماً من إمضاء الانطلاقة (connection في
+// database.js خطوة points_epoch_start) تخفّض العتبة تدريجياً بلا إدارة
+// يدوية: تبدأ اليوم الأول من ثلث العتبة وترتد وحدها للعتبة الكاملة في
+// الستين — انعكاس تلقائي بلا مهمة مجدولة ولا مفتاح يُنسى إطفاؤه.
+const POINTS_TRANSITION_DAYS = 60;
+
+/**
+ * العتبة الفاعلة عند يوم معيّن — تفاعل نقي لا يكتب، يُختبر بالتاريخ مباشرة.
+ * @param {number} base العتبة الكاملة للرتبة في POINTS_THRESHOLDS
+ * @param {string} refToday يوم المرجع (YYYY-MM-DD) — clock.today() في الاستعمال الحيّ
+ * @returns {{threshold:number, transitional:boolean, day:number|null, base:number}}
+ */
+function effectivePointsThreshold(base, refToday) {
+  const started = settings.policy('points_epoch_started_at', null) != null
+    ? String(settings.policy('points_epoch_started_at', null))
+    : null;
+  if (!started) return { threshold: base, transitional: false, day: null, base };
+  const day = Math.max(0, clock.daysBetween(started, String(refToday)));
+  if (day >= POINTS_TRANSITION_DAYS) return { threshold: base, transitional: false, day, base };
+  const ramped = Math.floor(base * day / POINTS_TRANSITION_DAYS);
+  const floor = Math.floor(base / 3);
+  return { threshold: Math.max(floor, ramped), transitional: true, day, base };
+}
 /**
  * التقييم البشري (تقييم المشرف/التفاعل/سرعة الاستجابة) صالح لهذه المدة فقط.
  * تقييم عمره سنة يقول شيئاً عن الماضي لا عن أهلية الترقية اليوم.
@@ -180,8 +207,14 @@ function evaluate(staff) {
   const currentPoints = points.getBalance(staff.user_id);
   const pointsThreshold = POINTS_THRESHOLDS[staff.team]?.[staff.rank];
   if (pointsThreshold != null) {
-    ok('نقاط الترقية', currentPoints >= pointsThreshold,
-      `${currentPoints}`, `${pointsThreshold}+`);
+    // النافذة الانتقالية (D7): عتبة مخفَّضة في أول ستين يوماً من انطلاقة
+    // النظام، معلنة في البوابة نفسها كي لا يضل العضو «عتبتي قلّت» بلا سبب.
+    const eff = effectivePointsThreshold(pointsThreshold, today);
+    ok('نقاط الترقية', currentPoints >= eff.threshold,
+      `${currentPoints}`,
+      eff.transitional
+        ? `${eff.threshold}+ (عتبة انتقالية — الكاملة ${pointsThreshold} بعد ${POINTS_TRANSITION_DAYS - eff.day} يوم)`
+        : `${pointsThreshold}+`);
   } else {
     // لا عتبة معرَّفة = لا ترقية تلقائية. تمرير البوابة لغياب عتبتها يمنح
     // ترقيةً بلا شرط نقاط — وهو عكس قرار «النقاط فقط». فتسقط بصريح لا صامت:
@@ -336,4 +369,5 @@ function approvalsList(requestId) {
 module.exports = {
   nextPromotion, evaluate, stability, pendingRequest, createRequest, listPending, getRequest, review,
   recordApproval, approvalsCount, approvalsList, windowLabel, RATING_VALID_DAYS, FAST_RESPONSE,
+  POINTS_TRANSITION_DAYS, effectivePointsThreshold,
 };

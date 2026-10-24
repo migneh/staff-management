@@ -996,6 +996,15 @@ function migrate(database) {
     addTableColumns('staff_members', [['rank_epoch', 'INTEGER NOT NULL DEFAULT 0']]);
   });
 
+  // إمضاء انطلاقة النظام (قرار المالك D7): نافذة العتبات الانتقالية الستينية
+  // تحتاج بداية ثابتة لا تتقلب مع كل إقلاع. خطوة مهاجرة تُكتب مرة واحدة على
+  // غرار الخطوات الباقية، وINSERT OR IGNORE يجعل الإقلاعات اللاحقة صامتة —
+  // القيمة بصيغة JSON-string كي يرجعها settings.policy() نصاً مباشرة.
+  runMigrationStep(database, 'points_epoch_start', () => {
+    database.prepare(`INSERT OR IGNORE INTO settings (key, value, updated_at)
+      VALUES ('policy.points_epoch_started_at', '"' || date('now') || '"', datetime('now'))`).run();
+  });
+
   // تجميد النقاط: عقوبة على 3 تقييمات سلبية في أسبوع. صف واحد لكل عضو (المفتاح
   // الأساسي هو user_id) يحمل «حتى متى» — لا حاجة لعدّ صفوف لمعرفة هل العضو
   // مجمَّد، والسؤال يُسأل في كل منح نقطة.

@@ -3,13 +3,14 @@ require('./sqlite-compat').install();
 process.env.DB_PATH = ':memory:';
 process.env.DOTENV_CONFIG_QUIET = 'true';
 process.env.TZ = 'Asia/Riyadh';
-const { test, describe, beforeEach } = require('node:test');
+const { test, describe, beforeEach, after } = require('node:test');
 const assert = require('node:assert');
 const { openMemoryDb, getDb } = require('../src/database');
 const clock = require('../src/clock');
 const staffService = require('../src/services/staff');
 const retention = require('../src/services/retention');
 const promotions = require('../src/services/promotions');
+const settings = require('../src/services/settings');
 const { LEVELS, SUPPORT_PROMOTIONS, MOD_PROMOTIONS, INACTIVE_STATUSES } = require('../src/constants');
 const { COMPONENT_ACCESS, commands, resolveComponent, validateRegistry } = require('../src/commands');
 
@@ -223,5 +224,48 @@ describe('الإيقاف المؤقت', () => {
     assert.equal(staffService.get('u3').status, 'removed');
     assert.equal(staffService.markLeft('u3'), null, 'لا تكرار');
     assert.ok(INACTIVE_STATUSES.includes('removed'));
+  });
+});
+
+describe('النافذة الانتقالية لعتبات النقاط (D7)', () => {
+  const BASE = 500; // 'Support' في POINTS_THRESHOLDS
+  after(() => settings.resetPolicy('points_epoch_started_at'));
+
+  test('منتصف النافذة: منحدر خطي فوق ثلث العتبة', () => {
+    settings.setPolicy('points_epoch_started_at', '2026-01-08');
+    const eff = promotions.effectivePointsThreshold(BASE, '2026-01-10');
+    assert.equal(eff.transitional, true);
+    assert.equal(eff.day, 2, 'فرق الأيام محسوب على نافذة كاملة لا ساعات');
+    assert.equal(eff.threshold, Math.max(Math.floor(BASE / 3), Math.floor(BASE * 2 / 60)));
+  });
+
+  test('اليوم 30: نصف العتبة — الإغلاق من أسفل لا من فوق', () => {
+    settings.setPolicy('points_epoch_started_at', '2026-01-08');
+    const eff = promotions.effectivePointsThreshold(BASE, '2026-02-07');
+    assert.equal(eff.day, 30);
+    assert.equal(eff.threshold, Math.floor(BASE * 30 / 60), 'النصف الدقيق عند منتصف النافذة');
+  });
+
+  test('اليوم 60 فأكثر: العتبة الكاملة تعود وحدها بلا مهمة مجدولة', () => {
+    settings.setPolicy('points_epoch_started_at', '2026-01-08');
+    const at = promotions.effectivePointsThreshold(BASE, '2026-03-09'); // 60 يوماً بالضبط
+    assert.equal(at.transitional, false, 'استكمال الستين يعني نهاية النافذة');
+    assert.equal(at.threshold, BASE);
+    const past = promotions.effectivePointsThreshold(BASE, '2026-04-01');
+    assert.equal(past.threshold, BASE, 'شهر فائض بلا انحراف');
+  });
+
+  test('قبل الإمّاء بيوم: اليوم صفر = أرضية الثلث لا صفر مطلق', () => {
+    settings.setPolicy('points_epoch_started_at', '2026-01-10');
+    const eff = promotions.effectivePointsThreshold(BASE, '2026-01-09'); // فرق زمني سالب
+    assert.equal(eff.day, 0, 'يوم سالب لا يجعل العتبة صفراً يُمرِّر الترقيات');
+    assert.equal(eff.threshold, Math.floor(BASE / 3), 'أرضية النافذة');
+  });
+
+  test('بلا إمضاء انطلاقة: العتبة الكاملة (قواعد أقدم من المهاجرة)', () => {
+    settings.resetPolicy('points_epoch_started_at');
+    const eff = promotions.effectivePointsThreshold(BASE, '2026-01-10');
+    assert.equal(eff.transitional, false, 'غياب الإمّاء يعني نظاماً ممتداً لا نافذة');
+    assert.equal(eff.threshold, BASE);
   });
 });

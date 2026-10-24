@@ -107,6 +107,7 @@ const FEATURE_TOGGLES_DEFAULTS = Object.freeze({
    detailedSystemStatus: true,    // يُقرأ في: src/commands/system.js (الوضع التفصيلي)
    promotionProgress: true,       // يُقرأ في: src/commands/promotion-progress.js
    myStatusCommand: true,         // يُقرأ في: src/commands/my-status.js
+   myPointsCommand: true,         // يُقرأ في: src/commands/my-points.js
    auditExport: true,             // يُقرأ في: src/commands/staff-logs.js
    autoBackups: true,             // يُقرأ في: src/scheduler.js (المهمة backup)
 });

@@ -1,0 +1,102 @@
+'use strict';
+require('./sqlite-compat').install();
+process.env.DB_PATH = ':memory:';
+process.env.DOTENV_CONFIG_QUIET = 'true';
+process.env.TZ = 'Asia/Riyadh';
+const { test, beforeEach } = require('node:test');
+const assert = require('node:assert/strict');
+const { openMemoryDb, getDb } = require('../src/database');
+const points = require('../src/services/points');
+const settings = require('../src/services/settings');
+const cmd = require('../src/commands/my-points');
+
+beforeEach(() => openMemoryDb());
+
+function seedStaff(id, rankEpoch = 0) {
+  getDb().prepare(`INSERT INTO staff_members (user_id, username, team, rank, status, rank_since, rank_epoch)
+    VALUES (?, ?, 'support', 'Support', 'active', '2020-01-01 00:00:00', ?)`).run(id, id, rankEpoch);
+}
+
+test('/my-points — بطاقة السجل: الرصيد، التجميد، ووسم العصور القديمة (D3)', () => {
+  seedStaff('u1', 1);
+  // صف عصره الحالي: مكافأة شهرية موسومة باسبها المقروء
+  const got = points.add({ userId: 'u1', reasonKey: 'best_month', refType: 'month', refId: '2026-02-01',
+    addedBy: 'auto', reason: 'الأفضل في الشهر' });
+  assert.equal(got.ok, true, String(got.reason));
+  // صف عصر حديث بلا نص مقروء: العرض يستخدم السبب كما ورد (مفتاح) بلا ترجمة مصنوعة
+  points.add({ userId: 'u1', reasonKey: 'absence_10d', refType: 'absence', refId: '2026-01-10', addedBy: 'auto' });
+  // صف عصر سابق: يظهر موسوماً لا مخفيًا — الدفتر صادق مع الأعصور
+  getDb().prepare(`INSERT INTO promotion_points (user_id, points, reason_key, reason, rank_epoch, created_at)
+    VALUES ('u1', 999, 'legacy', 'صف قديم', 0, '2025-12-01 00:00:00')`).run();
+
+  const member = getDb().prepare(`SELECT * FROM staff_members WHERE user_id = 'u1'`).get();
+  const freeze = points.isFrozen('u1');
+  assert.equal(freeze.frozen, false);
+  const card = cmd.renderLedger({
+    member,
+    rows: points.history('u1', 15),
+    balance: points.getBalance('u1'),
+    freeze,
+  });
+  const json = card.toJSON();
+  const moves = json.fields.find(f => f.name.includes('الحركات'));
+  assert.ok(moves, 'حقل الحركات موجود');
+  assert.match(moves.value, /عصر سابق/, 'صف العصر القديم موسوم صريحاً');
+  assert.match(moves.value, /الأفضل في الشهر/, 'السبب المقروء كما وُرد للدرفر');
+  assert.match(moves.value, /absence_10d/, 'المفتاح غير الموسوم يظهر كما هو لا ترجمة مصنوعة');
+  const balance = json.fields.find(f => f.name.includes('الرصيد'));
+  assert.ok(balance && String(balance.value).trim() !== '', 'حقل الرصيد موجود وغير فارغ (الرقم منسّق arDigits لا يُتبنى نصاً هنا)');
+  const toggleField = json.fields.find(f => f.name.includes('التجميد'));
+  assert.match(toggleField.value, /لا تجميد/);
+});
+
+test('/my-points — التجميد الفاعل يعرض حتى متى وسببه (D3)', () => {
+  seedStaff('u2', 0);
+  getDb().prepare(`INSERT INTO point_freezes (user_id, until, reason)
+    VALUES ('u2', '2030-01-01 00:00:00', 'ثلاثة تقييمات سلبية')`).run();
+  const member = getDb().prepare(`SELECT * FROM staff_members WHERE user_id = 'u2'`).get();
+  const card = cmd.renderLedger({
+    member,
+    rows: [],
+    balance: 0,
+    freeze: points.isFrozen('u2'),
+  });
+  const json = card.toJSON();
+  const toggleField = json.fields.find(f => f.name.includes('التجميد'));
+  assert.match(toggleField.value, /2030-01-01/);
+  assert.match(toggleField.value, /ثلاثة تقييمات سلبية/);
+  assert.match(json.description, /العصر الحالي/, 'وصف البطاقة يعلن العصر كي يفهم الرصيد بمرجعه');
+});
+
+test('/my-points — بلا حركات: لا يبهت السجل بل يقول دليلها (D3)', () => {
+  seedStaff('u3', 0);
+  const member = getDb().prepare(`SELECT * FROM staff_members WHERE user_id = 'u3'`).get();
+  const card = cmd.renderLedger({ member, rows: [], balance: 0, freeze: points.isFrozen('u3') });
+  const moves = card.toJSON().fields.find(f => f.name.includes('الحركات'));
+  assert.match(moves.value, /لا حركات بعد/);
+});
+
+test('/my-points — التنفيذ: رد خفي للمسجَّل، وفحص الحدث فعّال (D3)', async () => {
+  const execute = cmd.commands[0].execute;
+  assert.ok(cmd.commands[0].data.toJSON().name === 'my-points');
+  seedStaff('u5', 0);
+  const replies = [];
+  await execute({ user: { id: 'u5' }, reply: async p => { replies.push(p); } });
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].ephemeral, true, 'السجل رد خفي للعضو لا إلى قناة');
+  assert.ok(replies[0].embeds.length === 1);
+
+  // إيقاف الميزة = رفض صريح لا تجاوز صامت
+  settings.setFeatureToggle('myPointsCommand', false);
+  const blocked = [];
+  await execute({ user: { id: 'u5' }, reply: async p => { blocked.push(p); } });
+  assert.equal(blocked.length, 1);
+  assert.match(String(blocked[0].embeds?.[0]?.toJSON?.().description ?? ''), /معط/, 'رسالة الإيقاف صريحة');
+  settings.resetFeatureToggles();
+
+  // غير المسجل: رفض موثق
+  const stranger = [];
+  await execute({ user: { id: 'ghost' }, reply: async p => { stranger.push(p); } });
+  assert.equal(stranger.length, 1);
+  assert.match(String(stranger[0].embeds?.[0]?.toJSON?.().description ?? ''), /مسجل/, 'غير المسجل يُرفض بسجل واضح');
+});
