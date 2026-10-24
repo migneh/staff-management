@@ -401,21 +401,26 @@ describe('ترتيب النقاط (points.leaderboard): الحقبة الحال�
     seedMember('3005', { team: 'moderation', rank: 'Trial Moderator', points: 75 });
     seedMember('3006', { team: 'support', rank: 'Support', status: 'on_leave', points: 200 });
     seedMember('3007', { team: 'support', rank: 'Support', points: 0 }); // zero points
+    // قرار المالك D6 (2026-10-24): الحالات غير الفاعلة تغادر اللوحة. أعلى
+    // نقاط دفتر موجودة موزعة على معلّق: لو تسربت للوحة انقلبت كل القمم.
+    seedMember('3008', { team: 'support', rank: 'Support', status: 'suspended', points: 900 });
   });
 
   test('يعيد الأعضاء مرتبةً تنازلياً حسب النقاط الإجمالية', () => {
     const lb = points.leaderboard({ team: 'support', limit: 20 });
-    // فقط الأعضاء الذين لديهم إدخالات في promotion_points يظهرون (3007 بـ 0 نقاط لا يظهر)
-    assert.equal(lb.length, 4);
-    // ترتيب تنازلي: 250, 200, 100, 50
+    // فقط الفاعلون الحاليون بصفوف دفتر يظهرون: 3007 صفر النقاط لا يظهر،
+    // و3006 (on_leave) و3008 (suspended، أعلى رصيد بـ 900) خارج اللوحة —
+    // قرار المالك D6: حالات الاستثناء تلوث التقارير المحفوظة بظهورها.
+    assert.equal(lb.length, 3);
+    assert.ok(!lb.some(r => r.user_id === '3006'), 'on_leave خارج اللوحة');
+    assert.ok(!lb.some(r => r.user_id === '3008'), 'suspended خارج اللوحة مهما بلغ رصيده');
+    // ترتيب تنازلي: 250, 100, 50
     assert.equal(lb[0].user_id, '3002');
     assert.equal(lb[0].total, 250);
-    assert.equal(lb[1].user_id, '3006'); // on_leave but has points
-    assert.equal(lb[1].total, 200);
-    assert.equal(lb[2].user_id, '3001');
-    assert.equal(lb[2].total, 100);
-    assert.equal(lb[3].user_id, '3003');
-    assert.equal(lb[3].total, 50);
+    assert.equal(lb[1].user_id, '3001');
+    assert.equal(lb[1].total, 100);
+    assert.equal(lb[2].user_id, '3003');
+    assert.equal(lb[2].total, 50);
   });
 
   test('يستطيع التصفية حسب الفريق', () => {
@@ -429,7 +434,7 @@ describe('ترتيب النقاط (points.leaderboard): الحقبة الحال�
     const lb = points.leaderboard({ team: 'support', limit: 2 });
     assert.equal(lb.length, 2);
     assert.equal(lb[0].user_id, '3002');
-    assert.equal(lb[1].user_id, '3006');
+    assert.equal(lb[1].user_id, '3001', 'المعلّق والمُجاز يُقصّان فلا يشغلان مقعدين');
   });
 
   test('يعيد حقل frozen بناءً على point_freezes', () => {

@@ -6,6 +6,7 @@ const { messageParts } = require('./ticketLogs');
 const { normalizeDigits, nowIso } = require('../utils');
 const audit = require('./audit');
 const points = require('./points');
+const clock = require('../clock');
 
 function normalize(text) {
   return normalizeDigits(text).replace(/[أإآ]/g, 'ا').replace(/[\u064B-\u065F\u0670ـ]/g, '')
@@ -70,6 +71,15 @@ function record(input) {
     } else if (input.stars <= 2) {
       const r = points.add({ userId: input.staffId, reasonKey: 'rating_negative', refType: 'rating', refId: input.messageId, addedBy: input.botId });
       if (r.ok) earned += r.points;
+
+      // قرار المالك D1 (2026-10-24): ثلاث تقييمات سلبية في أسبوع = تجميد
+      // سبعة أيام للتراكم — الوعد المكتوب في توثيق هذه الخدمة، بلا طبّاق.
+      // النافذة بالطابع المفهرس (نمط promotions على نفس الجدول) والعدّ
+      // على الجدول لا على محاولات المنح: نقطةُ العدّ هي التقييمات نفسها.
+      const sinceStamp = clock.dayStartStamp(clock.addDays(clock.today(), -6)) || clock.addDays(clock.today(), -6);
+      const negs = getDb().prepare(`SELECT COUNT(*) c FROM support_ratings
+        WHERE staff_id = ? AND stars <= 2 AND rated_at >= ?`).get(input.staffId, sinceStamp).c;
+      if (negs >= 3) points.freeze(input.staffId, 7, `ثلاث تقييمات سلبية في أسبوع (${negs})`);
     }
 
     return { saved: true, id: Number(result.lastInsertRowid), earned };

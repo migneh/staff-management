@@ -110,16 +110,24 @@ test('الملاحظة العادية تُرسل للعضو مرة واحدة ب
   assert.ok(dms[0].text.includes(content));
 });
 
-test('لا نصّ في punishments.js يشير إلى نظام النقاط المحذوف', () => {
-  const MENTIONS = /نقاط|نقطة|\bpoints?\b/;
-  // الصياغة الوحيدة المسموحة: النفي الصريح المطابق لما في logging.js:51.
+test('إشارات punishments.js فيما يخص النقاط تتكلم عن التجميد لا عن منح (D1)', () => {
+  // برنامج النقاط عاد حياً (D1): ما كان «نظاماً محذوفاً» صار مكافأة قيد
+  // التجميد والاستئناف. العقد من جديد يجزم أن كل ذكر للنقاط هنا هو
+  // تجميد/استئناف لا وعد منح أو أثر للنظام القديم الممسوح.
+  const MENTIONS = /نقاط/;
   const HONEST = 'لا تُمنح نقاط لهذا الإجراء في النظام الحالي.';
   const offenders = SRC.split('\n')
     .map((line, n) => [n + 1, line])
-    .filter(([, line]) => MENTIONS.test(line) && !line.includes(HONEST))
+    .filter(([, line]) => MENTIONS.test(line)
+      && !line.includes(HONEST)
+      && !/تجميد/.test(line)
+      && !/unfreeze/i.test(line)
+      && !/require\('\.\.\/services\/points'\)/.test(line))
     .map(([n, line]) => `س${n}: ${line.trim()}`);
-  assert.deepEqual(offenders, [], 'إشارات باقية لنظام النقاط:\n' + offenders.join('\n'));
-  assert.ok(!/\bpoints?\b/.test(SRC), 'اسم points ما زال ظاهراً في المصدر');
+  assert.deepEqual(offenders, [], 'ذكر نقاط خارج إطار التجميد والاستئناف:\n' + offenders.join('\n'));
+  // أثر النظام القديم الممسوح لا يعود بأي شكل
+  assert.ok(!/\bscore\b/i.test(SRC), 'أثر نظام Score القديم');
+  assert.ok(!/give[-_]points/i.test(SRC), 'أثر أمر المنح القديم');
 });
 
 test('خيارات أوامر /warn و /note لا تعد بنقاط', () => {

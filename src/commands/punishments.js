@@ -5,6 +5,7 @@ const { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, Strin
 const { LEVELS, WARNING_TYPES, NOTE_TYPES, STATUS } = require('../constants');
 const settings = require('../services/settings');
 const { getDb } = require('../database');
+const points = require('../services/points');
 const staffService = require('../services/staff');
 const audit = require('../services/audit');
 const { COLORS, replyEphemeral, sendToChannel, dm, log } = require('../utils');
@@ -164,6 +165,28 @@ module.exports = {
         return forms.open(i, modals.note({ type }), { title: `📝 تسجيل ملاحظة: ${def.label}`, values: { target: user.id } });
       },
     },
+    {
+      data: new SlashCommandBuilder().setName('unfreeze').setDescription('رفع تجميد النقاط عن إداري (استئناف بعد فحص)')
+        .addUserOption(o => o.setName('user').setDescription('الإداري المجمَّد').setRequired(true))
+        .addStringOption(o => o.setName('reason').setDescription('سبب الرفع — يُسجَّل وثيقةً').setRequired(true)),
+      level: LEVELS.MANAGEMENT,
+      team: 'moderation',
+      async execute(i) {
+        if (!settings.featureToggle('punishmentSystem')) return replyEphemeral(i, '❌ نظام العقوبات معطّل حالياً.', COLORS.danger);
+        const user = i.options.getUser('user');
+        const reason = (i.options.getString('reason') || '').trim();
+        if (reason.length < 5) return replyEphemeral(i, 'اكتب سبباً واضحاً للرفع (خمسة محارف على الأقل).', COLORS.danger);
+        if (!staffService.get(user?.id)) return replyEphemeral(i, '❌ هذا العضو غير مسجل كإداري.', COLORS.danger);
+
+        // الاستئناف يرفع فقط ما فعلته العقوبة: يزيل صف التجميد فيعود التراكم،
+        // والتجميد لا يُحرِّر رصيداً قائماً ولا يكتب خصماً.
+        const removed = points.unfreeze(user.id);
+        audit.record({ action: 'points_unfreeze', actorId: i.user.id, targetId: user.id,
+          details: { reason, wasFrozen: removed } });
+        if (!removed) return replyEphemeral(i, `لا تجميد فعّال على <@${user.id}> — لا شيء يُرفع.`, COLORS.warning);
+        return replyEphemeral(i, `✅ رُفع التجميد عن <@${user.id}> — التراكم اشتغل من جديد.\n**السبب:** ${reason}`, COLORS.success);
+      },
+    },
   ],
 
   components: {
@@ -228,12 +251,17 @@ module.exports = {
       
       audit.record({ action: 'staff_warning_issued', actorId: i.user.id, targetId: draft.target, details: { type: draft.type, reason, rowId: res.lastInsertRowid }, channelId: i.channelId });
       
+      // قرار المالك D1 (2026-10-24): البطاقة كانت تعدّ بالتبريد وتعلنه
+      // في الرسالة بلا سطر يفرضه — الآن كل إنذار ذو freezeDays يُجمِّد
+      // التراكم فعلاً، والأخير (60 يوماً) يبقى مع الإيقاف لا بدله.
       let extra = '';
+      if (def.freezeDays) {
+        const fr = points.freeze(draft.target, def.freezeDays, `${def.label} — ${reason}`);
+        extra = `\n🧊 تجميد النقاط حتى ${fr.until} (${def.freezeDays} يوماً)`;
+      }
       if (def.suspend) {
         staffService.suspend(draft.target, '60 days');
-        extra = `\n⛔ تم الإيقاف\n↩️ يُرفع الإيقاف تلقائياً بعد 60 يوماً (أو يدوياً بـ \`/unsuspend\`)`;
-      } else if (def.freezeDays) { 
-        extra = `\n🧊 فترة تبريد للترقية: ${def.freezeDays} يوماً`; 
+        extra += `\n⛔ تم الإيقاف\n↩️ يُرفع الإيقاف تلقائياً بعد 60 يوماً (أو يدوياً بـ \`/unsuspend\`)`;
       }
       
       const e = warningCard(draft, { rowId: res.lastInsertRowid });
