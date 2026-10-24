@@ -24,6 +24,7 @@ const FEATURES = [
   { key: 'detailedSystemStatus', label: 'حالة النظام التفصيلية', group: 'system', hint: 'يُوقف الوضع التفصيلي في /system-status' },
   { key: 'promotionProgress', label: 'أمر تقدم الترقية', group: 'commands', hint: 'يُوقف أمر تقدم الترقية' },
   { key: 'myStatusCommand', label: 'أمر حالتي الحالية', group: 'commands', hint: 'يُوقف أمر حالتي' },
+  { key: 'myPointsCommand', label: 'أمر سجل نقاطي', group: 'commands', hint: 'يُوقف /my-points وسجل الحركات' },
   { key: 'auditExport', label: 'تصدير سجلات التدقيق', group: 'commands', hint: 'يُوقف /audit وسجل العمليات' },
   { key: 'autoBackups', label: 'نسخ احتياطية تلقائية', group: 'tracking', hint: 'يُوقف النسخ الاحتياطي المجدول' },
 ];
