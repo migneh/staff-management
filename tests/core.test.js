@@ -373,6 +373,7 @@ describe('التقارير والـ Leaderboard', () => {
     seedStaff('p1', 'support', 'Support');
     seedStaff('p2', 'support', 'Support');
     seedStaff('p3', 'support', 'Support', { status: 'on_leave' });
+    seedStaff('p5', 'support', 'Support', { status: 'suspended' });
     seedStaff('p4', 'moderation', 'Admin');
 
     // إضافة نقاط عبر promotion_points
@@ -380,15 +381,17 @@ describe('التقارير والـ Leaderboard', () => {
     db.prepare(`INSERT INTO promotion_points (user_id, points, reason_key, reason, ref_type, ref_id, rank_epoch) VALUES (?, ?, 'test', 'test', 'seed', ?, 0)`).run('p1', 100, 'p1_seed');
     db.prepare(`INSERT INTO promotion_points (user_id, points, reason_key, reason, ref_type, ref_id, rank_epoch) VALUES (?, ?, 'test', 'test', 'seed', ?, 0)`).run('p2', 200, 'p2_seed');
     db.prepare(`INSERT INTO promotion_points (user_id, points, reason_key, reason, ref_type, ref_id, rank_epoch) VALUES (?, ?, 'test', 'test', 'seed', ?, 0)`).run('p3', 50, 'p3_seed');
+    db.prepare(`INSERT INTO promotion_points (user_id, points, reason_key, reason, ref_type, ref_id, rank_epoch) VALUES (?, ?, 'test', 'test', 'seed', ?, 0)`).run('p5', 400, 'p5_seed');
 
+    // قرار المالك D6 (2026-10-24): الحالات غير الفاعلة تغادر اللوحة —
+    // كانت تظهر قبلها (on_leave «ما زال يظهر» قديماً) فلوّثت التقارير
+    // المحفوظة. هنا on_leave و suspended كلاهما خارج اللوحة مهما بلغت نقاطه.
     const lb = points.leaderboard({ team: 'support', limit: 20 });
-    assert.equal(lb.length, 3); // p3 has points but is on_leave, still shows
+    assert.equal(lb.length, 2); // p3 (on_leave) وp5 (suspended) مستثنيان
     assert.equal(lb[0].user_id, 'p2');
     assert.equal(lb[0].total, 200);
     assert.equal(lb[1].user_id, 'p1');
     assert.equal(lb[1].total, 100);
-    assert.equal(lb[2].user_id, 'p3');
-    assert.equal(lb[2].total, 50);
   });
 
   test('points.leaderboard يستبعد المستقيلين ويصفّي حسب الفريق', () => {

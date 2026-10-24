@@ -39,6 +39,11 @@ const EXPECTED_SKIPS = new Map([
   ['src/services/retention.js', { count: 1, reason: /قائمة صلبة/ }],
   // `SET ${sets}` مبنية من Object.keys: نفحص كل عمود في staff_members.
   ['src/services/staff.js', { count: 2, reason: /قائمة صلبة/ }],
+  // فلتر اللوحة يبني IN (...) من ثابت مشترك INACTIVE_STATUSES (قرار المالك
+  // D6): مصدر الحقيقة واحدة لا تتضاعف، والحارس لا يستطيع تقييم معرّف
+  // مستورد ساكناً — فالثقب موثّق هنا بسببه الحقيقي، وحارس العدد يمنع نموه
+  // الصامت في هذا الملف.
+  ['src/services/points.js', { count: 1, reason: /ثقب غير محلول/ }],
 ]);
 
 /** دوال الترحيل في database.js: جداولها يجب أن تكون جداول حقيقية. */

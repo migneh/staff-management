@@ -1,7 +1,7 @@
 'use strict';
 const { getDb } = require('../database');
 const clock = require('../clock');
-const settings = require('./settings');
+const { INACTIVE_STATUSES } = require('../constants');
 
 /**
  * نظام نقاط الترقيات — دفتر حركة لا رصيدٌ يُعدَّل.
@@ -16,12 +16,13 @@ const settings = require('./settings');
  * يتغيّر عند الترقية، والرصيد يُحسب على صفوف العصر الحالي فقط. الصفوف القديمة
  * تبقى — فهي سجل الفترة السابقة، وحذفها يُفقد «كم كان رصيده قبل الترقية».
  *
- * قيم النقاط قابلة للضبط بلا تعديل كود عبر policy('points.<key>', value)،
- * لأن الأرقام تقديرٌ يُصحَّح مع الزمن، وتعديل ثابت وإعادة نشر لتغيير رقم
- * ثمنٌ كبير على نظام يُضبط بالممارسة.
+ * قيم النقاط ثابتة في الكود (POINTS_DEFAULTS): آلية الضبط عبر policy
+ * أُزيلت بقرار المالك (ورقة قرارات D4، 2026-10-24) — القرّاء كانت فضاءً ميتاً:
+ * مكشوفة في القراءة بلا كاتبٍ ولا حدود، فيبدو نظاماً قابلاً للضبط ولا يمكن
+ * ضبطه فعلاً. لا يُستعاد المسار إلا عبر واجهة إدارة موثّقة بحدود رقمية لكل سبب.
  */
 
-/** قيم كل سبب — الافتراضي هنا، والضبط الفعلي من settings.policy */
+/** قيم كل سبب — ثابتة هنا؛ قرار المالك D4: لا تجاوزات بلا واجهة إدارة موثّقة */
 const POINTS_DEFAULTS = {
   // ===== الدعم الفني =====
   ticket_close: 2,          // تكتة مغلقة بنجاح
@@ -63,19 +64,15 @@ const TICKET_POINTS_DAILY_CAP = 20;
 const TICKET_POINTS_WEEKLY_CAP = 60;
 const TICKET_REASON_KEYS = ['ticket_close', 'ticket_escalated', 'rating_positive'];
 
-/** يقرأ قيمة سبب واحد من الضبط، ويعود للافتراضي إن لم تُضبط. */
+/** يقرأ قيمة سبب واحد من المدوّنات فقط — لا تجاوزات إعدادات (قرار المالك D4). */
 function pointsFor(reasonKey) {
-  const override = settings.policy(`points.${reasonKey}`, null);
-  const value = override == null ? POINTS_DEFAULTS[reasonKey] : override;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : POINTS_DEFAULTS[reasonKey];
+  const n = Number(POINTS_DEFAULTS[reasonKey]);
+  return Number.isFinite(n) ? n : 0;
 }
 
-/** سقف اليوم لسبب واحد (0 = بلا سقف). */
+/** سقف اليوم لسبب واحد (0 = بلا سقف) — ثابت من المدوّنات (قرار المالك D4). */
 function dailyCapFor(reasonKey) {
-  const override = settings.policy(`points.cap.${reasonKey}`, null);
-  const raw = override == null ? DAILY_CAPS_DEFAULTS[reasonKey] : override;
-  const n = Number(raw);
+  const n = Number(DAILY_CAPS_DEFAULTS[reasonKey]);
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
@@ -252,10 +249,11 @@ function leaderboard({ team = null, limit = 20 } = {}) {
     SELECT p.user_id, SUM(p.points) total, m.team, m.rank, m.status,
            (SELECT COUNT(*) FROM point_freezes f WHERE f.user_id = p.user_id AND f.until > ?) frozen
     FROM promotion_points p JOIN staff_members m ON m.user_id = p.user_id
-    WHERE m.rank_epoch = p.rank_epoch AND m.status != 'resigned' ${team ? 'AND m.team = ?' : ''}
+    WHERE m.rank_epoch = p.rank_epoch
+      AND m.status NOT IN (${INACTIVE_STATUSES.map(() => '?').join(', ')}) ${team ? 'AND m.team = ?' : ''}
     GROUP BY p.user_id, p.rank_epoch
     ORDER BY total DESC LIMIT ?`)
-    .all(clock.nowIso(), ...(team ? [team] : []), safeLimit);
+    .all(clock.nowIso(), ...INACTIVE_STATUSES, ...(team ? [team] : []), safeLimit);
   return rows.map(r => ({ ...r, frozen: Number(r.frozen) > 0 }));
 }
 
