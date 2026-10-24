@@ -149,22 +149,42 @@ module.exports = {
 
       // ===== نصاب الموافقات: الترقيات المعلنة بـ «Admin + Head» تحتاج موافقتين فعلاً =====
       const needed = rule.approvals || 1;
-      const { recorded, count } = promo.recordApproval(r.id, i.user.id);
-      if (!recorded) return replyEphemeral(i, `ℹ️ سجّلت موافقتك مسبقاً على الطلب #${r.id} (${count}/${needed}).`, COLORS.info);
+      const { recorded } = promo.recordApproval(r.id, i.user.id);
+      if (!recorded) {
+        const count = promo.approvalsCount(r.id);
+        return replyEphemeral(i, `ℹ️ سجّلت موافقتك مسبقاً على الطلب #${r.id} (${count}/${needed}).`, COLORS.info);
+      }
       // نؤجل قبل أي استدعاء شبكي: في فرع النصاب تعديل بطاقة الطلب، وفي فرع
       // الاعتماد members.fetch ثم applyRankRoles. سلسلة قد تتجاوز ثلاث ثوانٍ
       // بعد أن كُتبت الترقية — فيرى المراجع فشلاً على ترقية نجحت.
       await i.deferUpdate();
+      // سباق الترقيات (تقرير التدقيق): بين تسجيل موافقة المراجع وفصل هنا قد
+      // ينهي موافقٌ آخر الطلب في خيط آخر، فعدّاد `count` قبل التأجيل قديم:
+      // مع النصاب المزدوج كان المؤجِّل يعِد بـ«بانتظار موافقة إضافية» على طلب
+      // اعتُمد فعلًا ويعيد أزرار مراجعة على بطاقة معتمدة، ومع النصاب الفردي
+      // كان الموقّع الثاني (عدده أكبر من النصاب) يعيد الفصل كاملاً: مبروك في
+      // الخاص مرتين، ترقية منشورة مرتين، وتدقيق مزدوج. القرار الآن عن عين
+      // قراءة حية بعد التأجيل: من وجد الطلب معلقاً وعده كافياً سلوى إلى
+      // review() المُحارة، ومن وجده مراجَعاً فاز الغيرُ ويرى الحالة الحقيقية
+      // بلا أي أثر متصاعد (رتبة/خاص/قناة/سجل). موافقة الخاسر بضِعف النصاب
+      // تبقى محفوظة في الدفاتر فلا يُعاد الفصل عنها.
+      const fresh = promo.getRequest(r.id);
+      const count = promo.approvalsCount(r.id);
+      if (fresh.status !== 'pending') {
+        return i.editReply({ content: '⏳ تمت مراجعة هذا الطلب للتو من إداري آخر — لم يُنفَّذ شيء من نقرتك.', embeds: [requestEmbed(fresh)], components: [] });
+      }
       if (count < needed) {
         audit.record({ action: 'promotion_approval_recorded', actorId: i.user.id, targetId: r.user_id, details: { requestId: r.id, count, needed }, channelId: i.channelId });
-        const fresh = promo.getRequest(r.id);
         // i.message.edit كان يترك حالة «جارٍ التنفيذ» بلا جواب بعد التأجيل؛
         // editReply هو النهاية الصحيحة لردّ مؤجَّل، ثم ملاحظة خاصة عبر followUp.
         await i.editReply({ embeds: [requestEmbed(fresh)], components: [reviewRow(r.id)] });
         return i.followUp({ embeds: [embed(null, `✅ سُجّلت موافقتك (${count}/${needed}).\nبانتظار ${needed - count} موافقة إضافية من: ${rule.approvers}.`, COLORS.success)], ephemeral: true, allowedMentions: { parse: [] } });
       }
-
-      promo.review(r.id, 'approved', i.user.id, null);
+      // الفصل: review المُحارة يحكم بحد ذاته من حاز status='pending' لحظتها.
+      if (!promo.review(r.id, 'approved', i.user.id, null)) {
+        const updated = promo.getRequest(r.id);
+        return i.editReply({ content: '⏳ تمت مراجعة هذا الطلب للتو من إداري آخر — لم يُنفَّذ شيء من نقرتك.', embeds: [requestEmbed(updated)], components: [] });
+      }
       audit.record({ action: 'promotion_approved', actorId: i.user.id, targetId: r.user_id, details: { requestId: r.id, from: rule.from, to: rule.to, approvals: count, needed }, channelId: i.channelId });
       staffService.setRank(r.user_id, s.team, rule.to, { actorId: i.user.id, reason: `ترقية معتمدة (طلب #${r.id} بموافقة ${count}/${needed})`, changeType: 'promote', newEpoch: true });
       const member = await i.guild.members.fetch(r.user_id).catch(() => null);
@@ -189,8 +209,14 @@ module.exports = {
       // modal submit بلا رسالة مصدر ⇒ deferReply. بعده تعديل بطاقة الطلب ثم
       // إرسال الخاص للعضو، وكلاهما شبكة متسلسلة بعد كتابة الرفض.
       await i.deferReply();
+      // سباق المراجعة نفسه: الفصل مُحارَ بـ status='pending' — من سبق فاز،
+      // والخاسر لا يسجّل رفضاً مزدوجاً ولا يبعث للعضو برفض لم يصدر عنه،
+      // ولا يعدّل بطاقة بمراجعته التي لم تُكتب أصلاً.
+      if (!promo.review(r.id, 'rejected', i.user.id, reason)) {
+        const updated = promo.getRequest(r.id);
+        return i.editReply({ content: '⏳ تمت مراجعة هذا الطلب للتو من إداري آخر — لم يُسجَّل سبب رفضك.', embeds: [requestEmbed(updated)], allowedMentions: { parse: [] } });
+      }
       audit.record({ action: 'promotion_rejected', actorId: i.user.id, targetId: r.user_id, details: { requestId: r.id, reason }, channelId: i.channelId });
-      promo.review(r.id, 'rejected', i.user.id, reason);
       if (i.message) await i.message.edit({ embeds: [requestEmbed(promo.getRequest(r.id), COLORS.danger)], components: [] }).catch(() => {});
       await i.editReply({ embeds: [embed(null, `تم رفض الطلب #${r.id}.`, COLORS.danger)], allowedMentions: { parse: [] } });
       await dm(i.client, r.user_id, { embeds: [embed('❌ تم رفض طلب الترقية', `**السبب:** ${reason}\nيمكنك التقديم مجدداً.`, COLORS.danger)] });

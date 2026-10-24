@@ -340,9 +340,16 @@ function getRequest(id) {
   return getDb().prepare('SELECT * FROM promotion_requests WHERE id = ?').get(id) || null;
 }
 
+/**
+ * فصل الطلب (تقرير التدقيق): الكتابة مُحارة بـ status='pending' في WHERE —
+ * من حاز حالة المعلّق لحظتها فاز بالمراجعة، ومن ابتُذل سبقَه لا يلمس شيئاً.
+ * تعيد true عند النجاح (changes !== 0). المستدعون: promo:approve وpromo:rejectmodal
+ * والمُسقِط المجدول للطلبات الأقدم من 30 يوماً.
+ */
 function review(id, status, reviewerId, reason) {
-  getDb().prepare(`UPDATE promotion_requests SET status = ?, reviewed_by = ?, review_reason = ?, reviewed_at = datetime('now') WHERE id = ?`)
+  const res = getDb().prepare(`UPDATE promotion_requests SET status = ?, reviewed_by = ?, review_reason = ?, reviewed_at = datetime('now') WHERE id = ? AND status = 'pending'`)
     .run(status, reviewerId, reason || null, id);
+  return res.changes !== 0;
 }
 
 // ===== نصاب الموافقات =====
