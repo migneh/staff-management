@@ -128,7 +128,9 @@ test('موقوف: كل مكوّن خارج قائمة السماح ممنوع، 
       }
     } finally { spy.restore(); }
   }
-  assert.ok(allowed >= 10, `قائمة السماح فقدت بادئات (المسموح ${allowed})`);
+  // بعد ⑨: بادئتا leave فقط ذاتيتان للموقوف — عدّاد العتبة هنا يوثّق أن
+  // القائمة لم تفرُغ بالخطأ ولا خسّرت بادئة بقيمة صفرية.
+  assert.ok(allowed >= 2, `قائمة السماح فقدت بادئات (المسموح ${allowed})`);
   assert.ok(denied > 100, `الرفض شمل ${denied} مدخلاً فقط — القائمة نفدت؟`);
 });
 
@@ -136,6 +138,55 @@ test('كل بادئة في قائمة السماح تطابق مكوّناً م�
   // خطأ إملائي في بادئة = اسم لا يطابق شيئاً = مافيش تغطية بدون أن يظهر
   for (const p of SUSPENDED_ALLOWED_COMPONENT_PREFIXES) {
     assert.ok(IDS.some(id => customIdFor(id).startsWith(p)), `بادئة في قائمة السماح لا تطابق أي مكوّن: ${p}`);
+  }
+});
+
+// ===== ⑨: بادئات الموقوف ذاتية الخدمة لا الإجرائية على الآخرين =====
+// لو عادت إحداها إلى قائمة السماح يُشتعل اختبارُها المسمّى هنا قبل أن
+// تكتفي بحلقة الرفض العام فوق (تثبيت سياسة المالك لا تصادف).
+
+test('موقوف: عقوبات modaction محجوبة (كانت مسموحة — إجرائية على أعضاء آخرين)', async () => {
+  const i = interaction({ id: 'susp-mod', level: LEVELS.STAFF, team: 'moderation', status: 'suspended' });
+  i.customId = 'modaction:confirm:abc123'; // زر تأكيد واقعي من سلسلة wizard المعلّقة
+  const spy = spyOn('modaction:confirm');
+  try {
+    await dispatch(i);
+    assert.equal(spy.calls.length, 0, 'موقوف سجّل عقوبة على عضو آخر');
+    assert.match(textOf(i), /موقوف/, 'سبب الرفض ليس الإيقاف');
+  } finally { spy.restore(); }
+});
+
+test('موقوف: تسجيل تكتات ticket:log محجوب (كان مسموحاً — يحمل وضع المشرف وأثر نقاط)', async () => {
+  const i = interaction({ id: 'susp-tkt', level: LEVELS.SUPERVISOR, team: 'support', status: 'suspended' });
+  i.customId = 'ticket:log:123456789012345678'; // شكل الوضع الإشرافي: معرّف المُغلِّف
+  const spy = spyOn('ticket:log');
+  try {
+    await dispatch(i);
+    assert.equal(spy.calls.length, 0, 'موقوف بمستوى SUPERVISOR — التسجيل كان مسموحاً له فصار محجوباً');
+    assert.match(textOf(i), /موقوف/);
+  } finally { spy.restore(); }
+});
+
+test('موقوف: طلب الترقية الذاتي promo:modal محجوب (قرار المالك — لا ترقية في الإيقاف)', async () => {
+  const i = interaction({ id: 'susp-promo', level: LEVELS.STAFF, team: 'support', status: 'suspended' });
+  i.customId = 'promo:modal'; // customId بلا معاملات كما يُبنى فعلياً
+  const spy = spyOn('promo:modal');
+  try {
+    await dispatch(i);
+    assert.equal(spy.calls.length, 0, 'موقوف فتح نموذج طلب الترقية');
+    assert.match(textOf(i), /موقوف/);
+  } finally { spy.restore(); }
+});
+
+test('موقوف: بادئتا الإجازة الذاتية ما زالتا تعملان (عوامل الخدمة الشخصية لم تُمسّ)', async () => {
+  for (const [id, customId] of [['leave:modal', 'leave:modal:vacation'], ['leave:extendmodal', 'leave:extendmodal:7']]) {
+    const i = interaction({ id: 'susp-leave', level: LEVELS.STAFF, team: 'support', status: 'suspended' });
+    i.customId = customId;
+    const spy = spyOn(id);
+    try {
+      await dispatch(i);
+      assert.equal(spy.calls.length, 1, `${id}: بادئة ذاتية مضمونة الخدمة يجب أن تعمل للموقوف`);
+    } finally { spy.restore(); }
   }
 });
 

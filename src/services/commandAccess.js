@@ -38,10 +38,14 @@ function commandAccessError(command, context) {
 
 /**
  * قائمة البادئات المسموح بها لموقوف — مصدر واحد بدل regex في componentDispatch.
- * كل بادئة تكتب هنا يجب أن تُختبر: mutating جديد بلا اسم هنا = تسريب صلاحية.
+ * قرار ⑨: ذاتية الخدمة فقط، موازيةً لبوابة الأوامر (resign وسجلك/مهامك).
+ * كل بادئة هنا يجب أن تُختبر: mutating جديد بلا اسم هنا = تسريب صلاحية،
+ * وmutating ذاتيًّا لا يدخل أصلاً — عقوبات (modaction:*) وتسجيل تكتات
+ * (ticket:log:*) كتابةٌ في أذيّة الآخرين، وطلب الترقية (promo:modal)
+ * لا يُتقدّم به في حالة الإيقاف (قرار المالك).
  */
 const SUSPENDED_ALLOWED_COMPONENT_PREFIXES = [
-  'ticket:', 'modaction:', 'leave:modal', 'leave:extendmodal', 'promo:modal',
+  'leave:modal', 'leave:extendmodal',
 ];
 
 /**
