@@ -168,6 +168,15 @@ const RESIGNATION_GLOBAL = {
 // ===== إجراءات الإشراف =====
 const MOD_ACTION_TYPES = { warn: 'تحذير', timeout: 'تايم أوت', kick: 'كيك', ban: 'بان', delete: 'حذف رسائل', voice: 'فويس', nickname: 'تغيير الاسم' };
 
+/**
+ * الإجراءات الجادّة: معالجة مخالفة حقيقية لا روتين. قائمة واحدة يقرأها وجهان
+ * كي لا ينفصما: بوابة «حل النزاعات» في ترقيات الإشراف، ومنح نقاط mod_action
+ * (+2) عند تأكيد تسجيل الإجراء (موجة نقاط 2026-10-24). صياغة SQL في
+ * promotions.js تبقى نصية عمداً — التدخل الحركة الكيماوية للمخطط لا يتدخلها
+ * لأن حارس المخطط يفحص الجمل ساكنةً.
+ */
+const SERIOUS_MOD_ACTION_TYPES = ['warn', 'timeout', 'kick', 'ban'];
+
 // ===== الملاحظات والإنذارات =====
 const NOTE_TYPES = {
   positive: { label: 'ملاحظة إيجابية', emoji: '🟢', minLevel: LEVELS.SUPERVISOR },
@@ -310,7 +319,7 @@ module.exports = {
   LEVELS, SUPPORT_RANKS, MOD_RANKS, GENERAL_MANAGEMENT_RANKS, SYSTEM_ROLES, TEAMS, STATUS, INACTIVE_STATUSES, FAQ_CATEGORIES,
   CHANNEL_META, CHANNEL_KEYS, OPTIONAL_CHANNEL_KEYS,
   ACTIVITY_WEIGHTS, ACTIVITY_TYPE_NAMES, SPAM, ABSENCE, LEAVE_TYPES, LEAVE_RULES, LEAVE_GLOBAL, VACATION_ROLE_TIMING, WEEKDAYS_AR,
-  RESIGNATION_REASONS, RESIGNATION_GLOBAL, MOD_ACTION_TYPES,
+  RESIGNATION_REASONS, RESIGNATION_GLOBAL, MOD_ACTION_TYPES, SERIOUS_MOD_ACTION_TYPES,
   NOTE_TYPES, WARNING_TYPES, RECOGNITION, SUPPORT_PROMOTIONS, MOD_PROMOTIONS, PROBATION,
   POINTS_THRESHOLDS,
 };

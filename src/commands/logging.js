@@ -2,9 +2,11 @@
 const forms = require('../ui/forms');
 const { randomBytes } = require('node:crypto');
 const { SlashCommandBuilder, ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const { LEVELS, MOD_ACTION_TYPES } = require('../constants');
+const { LEVELS, MOD_ACTION_TYPES, SERIOUS_MOD_ACTION_TYPES } = require('../constants');
 const { getDb } = require('../database');
 const ticketLogs = require('../services/ticketLogs');
+const points = require('../services/points');
+const logger = require('../logger').log('logging');
 const audit = require('../services/audit');
 const staffService = require('../services/staff');
 const { actionRankDenial } = require('../services/permissions');
@@ -16,6 +18,34 @@ const kit = require('../ui/kit');
 const DRAFT_TTL = 15 * 60 * 1000;
 const drafts = new Map();
 const pendingCustom = new Map();
+
+/**
+ * منح نقاط معالجة المخالفة (+2 mod_action) — موجات نقاط 2026-10-24.
+ *
+ * الإجراءات الجادّة فقط (SERIOUS_MOD_ACTION_TYPES): تحذير/تايم أوت/كيك/بان.
+ * الروتين (حذف/فويس/اسم) هو العمل اليومي المتكرر — لو دُفع عنه لكانت النقاط
+ * راتباً حضور لا مقياس اختلاف. المرجع هو صف mod_actions نفسه
+ * (idx_points_unique_ref على reason_key/ref_type/ref_id): إعادة تأكيد أو
+ * إعادة إدخال لنفس الصف لا يمنح مرتين.
+ */
+function awardModActionPoints({ moderatorId, rowId, actionType }) {
+  if (!SERIOUS_MOD_ACTION_TYPES.includes(actionType)) {
+    return { ok: false, routine: true };
+  }
+  try {
+    return points.add({
+      userId: moderatorId,
+      reasonKey: 'mod_action',
+      reason: `معالجة إجراء جادّ (${MOD_ACTION_TYPES[actionType] || actionType}) #${rowId}`,
+      refType: 'mod_action',
+      refId: String(rowId),
+      addedBy: 'bot',
+    });
+  } catch (e) {
+    logger.warn(`تعذّر منح نقاط الإجراء #${rowId}: ${e.message}`);
+    return { ok: false };
+  }
+}
 
 function rememberDraft(draft) { drafts.set(draft.token, draft); }
 function getDraft(i, token) {
@@ -50,7 +80,7 @@ function actionCard(draft, { pending = false, rowId = null } = {}) {
      fields: [
        { name: '👤 العضو', value: `<@${draft.target}>`, inline: true },
        { name: '📋 السبب', value: draft.reason, inline: false },
-       pending ? { name: 'ℹ️ ملاحظة', value: 'لا تُمنح نقاط لهذا الإجراء في النظام الحالي.', inline: false } : null,
+       pending ? { name: 'ℹ️ ملاحظة', value: 'الإجراءات الجادّة (تحذير/تايم أوت/كيك/بان) تمنح **+2 نقطة** عند التأكيد؛ الإجراءات الروتينية (حذف/فويس/اسم) بلا نقاط.', inline: false } : null,
      ],
      color: pending ? COLORS.info : COLORS.warning,
      footer: kit.footerLine(pending ? '⚠️ مراجعة قبل التسجيل' : `السجل #${rowId}`),
@@ -336,6 +366,10 @@ module.exports = {
         .run(draft.actorId, draft.target, draft.type, draft.reason, draft.duration, draft.evidence);
       
       audit.record({ action: 'moderation_action_logged', actorId: draft.actorId, targetId: draft.target, details: { type: draft.type, reason: draft.reason, evidence: draft.evidence, duration: draft.duration, rowId: res.lastInsertRowid }, channelId: i.channelId });
+      // نقاط معالجة المخالفة: بعد كتابة الصف في mod_actions وبإحالته مرجعاً —
+      // فشل المنح لا يُسقط تأكيد الإجراء الذي نجح قبلها (تسجيل أهم من مكافأته).
+      const award = awardModActionPoints({ moderatorId: draft.actorId, rowId: Number(res.lastInsertRowid), actionType: draft.type });
+      if (!award.ok && !award.routine) logger.info(`نقاط الإجراء #${res.lastInsertRowid} لم تُمنح: ${award.reason}.`);
       const e = actionCard(draft, { rowId: res.lastInsertRowid });
       await sendToChannel(i.client, 'mod-logs', { embeds: [e] });
       await i.editReply({ embeds: [e], components: [] });
@@ -361,10 +395,12 @@ module.exports = {
     'modaction:edit': async (i, [token]) => {
       const draft = getDraft(i, token);
       if (!draft) return replyEphemeral(i, '⌛ انتهت صلاحية هذه البطاقة. ابدأ من جديد.', COLORS.warning);
-      drafts.delete(token);
+       drafts.delete(token);
       return forms.open(i, modals.action({ type: draft.type }), {
         values: { target: draft.target, reason: draft.presetReason || '', preset: draft.presets, evidence: draft.evidence || '', duration: DURATION_OPTIONS.some(o => o.value === draft.duration) ? draft.duration : 'custom' },
       });
     },
   },
 };
+
+module.exports.awardModActionPoints = awardModActionPoints;
