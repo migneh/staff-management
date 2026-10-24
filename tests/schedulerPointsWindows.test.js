@@ -39,8 +39,43 @@ test('dailyPresence awards the just-ended local day, not the new day', async () 
   });
 });
 
-test('monthlyBest evaluates and awards the complete previous month at a year boundary', async () => {
-  await withDate('2026-01-01T12:00:00.000Z', async () => {
+test('absencePenalty subtracts once per episode, not once per day (D9)', async () => {
+  await withDate('2026-03-15T12:00:00.000Z', async () => {
+    staff('gone-user');
+    // آخر نشاط حقيقي قبل نافذة العشر أيام — هو إمضاء الفترة لا تاريخ الكشف
+    getDb().prepare(`INSERT INTO activity_logs (user_id, channel_id, channel_type, weight, day, created_at)
+      VALUES ('gone-user', 'work', 'chat', 1, '2026-02-20', '2026-02-20 12:00:00')`).run();
+
+    await scheduler.absencePenalty({}); // يوم الكشف الأول: خصم واحد
+    await scheduler.absencePenalty({}); // إعادة تشغيل في نفس اليوم: لا جديد
+    await withDate('2026-03-16T12:00:00.000Z', async () => {
+      await scheduler.absencePenalty({}); // اليوم التالي: نفس الفترة → لا خصم ثانٍ
+    });
+
+    const rows = getDb().prepare(`SELECT ref_id, points FROM promotion_points
+      WHERE user_id = 'gone-user' AND reason_key = 'absence_10d'`).all();
+    assert.equal(rows.length, 1, 'صف واحد لكل فترة غياب مهما تعددت أيام الكشف');
+    assert.equal(rows[0].ref_id, '2026-02-20', 'الإمضاء آخر يوم نشاط لا تاريخ اليوم');
+    assert.equal(rows[0].points, -50, 'خصم الفترة الواحد');
+  });
+});
+
+test('never-active member: penalty anchored at onboarding, stable across days (D9)', async () => {
+  await withDate('2026-03-15T12:00:00.000Z', async () => {
+    getDb().prepare(`INSERT INTO staff_members (user_id, username, team, rank, status, rank_since, joined_at)
+      VALUES ('fresh-user', 'fresh-user', 'support', 'Support', 'active', '2020-01-01 00:00:00', '2026-01-10 09:00:00')`).run();
+    await scheduler.absencePenalty({});
+    await withDate('2026-03-16T12:00:00.000Z', async () => {
+      await scheduler.absencePenalty({});
+    });
+    const rows = getDb().prepare(`SELECT ref_id FROM promotion_points
+      WHERE user_id = 'fresh-user' AND reason_key = 'absence_10d'`).all();
+    assert.equal(rows.length, 1, 'بلا نشاط قط: الإمضاء تاريخ الدخول الثابت لا نافذة متحركة');
+    assert.equal(rows[0].ref_id, '2026-01-10');
+  });
+});
+
+test('monthlyBest evaluates and awards the complete previous month at a year boundary', async () => {  await withDate('2026-01-01T12:00:00.000Z', async () => {
     staff('month-user');
     const activity = getDb().prepare(`INSERT INTO activity_logs (user_id, channel_id, channel_type, weight, day, created_at)
       VALUES ('month-user', 'work', 'chat', 1, ?, ?)`);

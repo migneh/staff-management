@@ -849,7 +849,9 @@ async function monthlyBest(client) {
  * عقوبة الغياب: يطبق -50 absence_10d لكل إداري غاب 10 أيام متتالية بلا إجازة.
  *
  * يتحقق من: لا نشاط في activity_logs لآخر 10 أيام، ولا إجازة نشطة، وليس مستثنى.
- * المرجع اليومي (refType='absence', refId=YYYY-MM-DD) يضمن تطبيق العقوبة مرة واحدة لكل فترة غياب.
+ * إمضاء الفترة (قرار المالك D9): refId = آخر يوم نشاط للعضو (أو تاريخ دخوله)
+ * — صف واحد لكل فترة غياب مهما طالت، لا خصمًا يومياً؛ التكرار على نفس
+ * الإمضاء يرفضه الفهرس الفريد على (user_id, reason_key, ref_type, ref_id).
  */
 async function absencePenalty(client) {
   const t = today();
@@ -879,15 +881,27 @@ async function absencePenalty(client) {
     `).get(m.user_id, t, tenDaysAgo);
     if (hasLeave) continue;
 
-    // هل سبق تطبيق العقوبة لهذه الفترة؟ (refId = تاريخ اليوم)
+    // ===== مرجع الفترة (قرار المالك D9): مرة واحدة لكل فترة غياب =====
+    // آخر يوم نشاط حقيقي هو إمضاء بداية الفترة؛ العضو بلا أي نشاط قط
+    // تُعتمد تاريخ دخوله إمضاءاً. كان المرجع «تاريخ اليوم» فما إن ينقلب
+    // اليوم حتى يكون refId جديداً فتنطبق -50 مجدداً — خصم يومي متسلسل
+    // تحت تعليق «مرة واحدة لكل فترة». الإمضاء الثابت يجعل الفترة صفّاً
+    // واحداً مهما طالت: التكرار على نفس الإمضاء يصطدم بالفهرس الفريد.
+    const lastActive = db.prepare(`SELECT MAX(day) d FROM activity_logs WHERE user_id = ?`).get(m.user_id)?.d;
+    const anchor = (lastActive ? String(lastActive) : '')
+      || String(m.joined_at || '').slice(0, 10)
+      || String(m.rank_since || '').slice(0, 10)
+      || tenDaysAgo;
+
+    // هل سبق تطبيق العقوبة لهذه الفترة؟ (refId = إمضاء الفترة لا تاريخ اليوم)
     const already = db.prepare(`
       SELECT 1 FROM promotion_points
       WHERE user_id = ? AND reason_key = 'absence_10d' AND ref_type = 'absence' AND ref_id = ?
       LIMIT 1
-    `).get(m.user_id, t);
+    `).get(m.user_id, anchor);
     if (already) continue;
 
-    const r = points.add({ userId: m.user_id, reasonKey: 'absence_10d', refType: 'absence', refId: t, addedBy: 'auto' });
+    const r = points.add({ userId: m.user_id, reasonKey: 'absence_10d', refType: 'absence', refId: anchor, addedBy: 'auto' });
     if (r.ok) {
       applied++;
       logger.warn(`📉 عقوبة غياب: <@${m.user_id}> (${m.rank}) — 10 أيام بلا نشاط ولا إجازة.`);
