@@ -900,7 +900,18 @@ module.exports = {
       // الاعتماد كُتب فعلياً — فيرى المراجع «فشل التفاعل» ولا يعرف أن الطلب اعتُمد.
       // الفحوص أعلاه كلها قراءة محلية (SQLite) فلا داعي لتأجيلها.
       await i.deferUpdate();
-      db.prepare(`UPDATE leave_requests SET status = 'approved', reviewed_by = ?, reviewed_at = datetime('now') WHERE id = ?`).run(i.user.id, r.id);
+      // سباق مراجعة الإجازات (تقرير التدقيق): بين فحص الحالة أعلاه وهذه
+      // الكتابة قد يُراجَع الطلب نفسه من نقرات متلاصقة على البطاقة (أو لوحة +
+      // بطاقة في خيطين). الحارس status='pending' في WHERE يجعل الكتابة الثانية
+      // عبثاً — ودون آثارها الجانبية كاملة (رتبة in vacation، حالة العضو
+      // on_leave، سجل التدقيق، خاص العضو، لوحة المشرفين) المتصاعدة من مراجَعِ
+      // آخرَ فعلَها. الفائز الوحيد من حاز status='pending' لحظتها.
+      const write = db.prepare(`UPDATE leave_requests SET status = 'approved', reviewed_by = ?, reviewed_at = datetime('now') WHERE id = ? AND status = 'pending'`).run(i.user.id, r.id);
+      if (write.changes === 0) {
+        // الخاسر يرى الحالة الحقيقية في بطاقة بلونها الصحيح، بلا رتبة ولا سجل ولا خاص.
+        const updated = db.prepare('SELECT * FROM leave_requests WHERE id = ?').get(r.id);
+        return i.editReply({ content: '⏳ تمت مراجعة هذا الطلب للتو من إداري آخر — لم يُنفَّذ شيء من نقرتك.', embeds: [leaveEmbed(updated)], components: [] });
+      }
       const member = await fetchMember(i, r.user_id);
       const timing = settings.leavePolicy().vacationRoleTiming || 'at_start';
       let roleResult = { ok: true, skipped: true };
@@ -936,7 +947,13 @@ module.exports = {
       // بعده شبكة كاملة: تعديل رسالة الطلب (channels.fetch + messages.fetch + edit)
       // ثم خاص العضو ثم سجل المشرفين — وكلها تفوق ثلاث ثوانٍ متسلسلة.
       await i.deferReply();
-      db.prepare(`UPDATE leave_requests SET status = 'rejected', reviewed_by = ?, review_reason = ?, reviewed_at = datetime('now') WHERE id = ?`).run(i.user.id, reason, r.id);
+      // حارس سباق المراجعة نفسه: الكتابة الثانية على طلب راجعه غيرُها عبثاً —
+      // لا سجلّ رفض مزدوج، ولا خاصّ مضلّل «تم رفض إجازتك» لطلب لم يرفضه المرسل.
+      const write = db.prepare(`UPDATE leave_requests SET status = 'rejected', reviewed_by = ?, review_reason = ?, reviewed_at = datetime('now') WHERE id = ? AND status = 'pending'`).run(i.user.id, reason, r.id);
+      if (write.changes === 0) {
+        const updated = db.prepare('SELECT * FROM leave_requests WHERE id = ?').get(r.id);
+        return i.editReply({ content: '⏳ تمت مراجعة هذا الطلب للتو من إداري آخر — لم يُسجَّل سبب رفضك.', embeds: [leaveEmbed(updated)], components: [] });
+      }
       audit.record({ action: 'leave_rejected', actorId: i.user.id, targetId: r.user_id, details: { requestId: r.id, reason }, channelId: i.channelId });
       const updated = db.prepare('SELECT * FROM leave_requests WHERE id = ?').get(r.id);
       await updateRequestMessage(i.client, updated, COLORS.danger);
@@ -1066,7 +1083,14 @@ module.exports = {
       // نؤجل قبل تعديل رسالة الطلب (شبكة) — الإلغاء قد يكون كُتب فعلاً بينما
       // المستخدم يرى «فشل التفاعل»، فيعيد الضغط ويصطدم بطلب ملغى أصلاً.
       await i.deferUpdate();
-      getDb().prepare(`UPDATE leave_requests SET status='cancelled', cancelled_by=?, cancelled_at=datetime('now'), cancel_reason='ألغته الإدارة من لوحة المراجعة', end_reason='admin' WHERE id=?`).run(i.user.id, r.id);
+      // حارس سباق المراجعة: الإلغاء يُسجَّل فقط على طلب ما زال معلقاً لحظة
+      // الكتابة — إلغاءٌ على طلب اعتمده/رفضه إداري آخر خلال نفس النافذة كان
+      // سيمسح قراره (cancelled_by/end_reason فوق مراجعته) وتُحرَّر حوله سجلات مضللة.
+      const write = getDb().prepare(`UPDATE leave_requests SET status='cancelled', cancelled_by=?, cancelled_at=datetime('now'), cancel_reason='ألغته الإدارة من لوحة المراجعة', end_reason='admin' WHERE id=? AND status='pending'`).run(i.user.id, r.id);
+      if (write.changes === 0) {
+        const updated = getDb().prepare('SELECT * FROM leave_requests WHERE id=?').get(r.id);
+        return i.editReply({ content: '⏳ تمت مراجعة هذا الطلب للتو من إداري آخر — لم يُنفَّذ إلغاؤك.', embeds: [leaveEmbed(updated)], components: [] });
+      }
       const updated = getDb().prepare('SELECT * FROM leave_requests WHERE id=?').get(r.id);
       await updateRequestMessage(i.client, updated);
       audit.record({ action: 'leave_cancelled_by_admin', actorId: i.user.id, targetId: r.user_id, details: { requestId: r.id }, channelId: i.channelId });
@@ -1123,7 +1147,22 @@ module.exports = {
       // الإجازة (roles.add/remove) ثم تعديل رسالة الطلب. التأجيل هنا يعني أن
       // العضو يرى «جارٍ التنفيذ» بدل «فشل التفاعل» على إجراء كُتب فعلاً.
       await i.deferUpdate();
-      getDb().prepare(`UPDATE leave_requests SET status='cancelled', cancelled_by=?, cancelled_at=datetime('now'), cancel_reason='ألغاه صاحب الطلب' WHERE id=?`).run(i.user.id, r.id);
+      // سباق الإلغاء الذاتي (تقرير التدقيق): بين الفحص والكتابة قد تعتمد/ترفض
+      // الإدارةُ الطلب في خيط آخر؛ الحارس الحالتي يمنع كتابة cancelled فوق
+      // مراجعة الغير، ويشفّر شرط «لم تبدأ بعد» في SQL نفسه حتى لا يتغير
+      // اليوم بين الفحص والكتابة فيمر الإلغاء على إجازة جارية. نجاحُ الحارس
+      // يعني أن حالة الطلب والمُلغي ملكية الفحص لم تتحركا، فمزامنة الرتبة
+      // بعده آمنة؛ خلافه لا تُنفيذ مزامنة إجازة لم يلغِه المالك أصلاً.
+      const write = getDb().prepare(`UPDATE leave_requests SET status='cancelled', cancelled_by=?, cancelled_at=datetime('now'), cancel_reason='ألغاه صاحب الطلب' WHERE id=? AND status IN ('pending','approved') AND (status='pending' OR start_date > ?)`).run(i.user.id, r.id, today());
+      if (write.changes === 0) {
+        const updated = getDb().prepare('SELECT * FROM leave_requests WHERE id=?').get(r.id);
+        const note = updated.status === 'rejected'
+          ? 'رُفض الطلب من الإدارة قبل إلغائك.'
+          : updated.status === 'approved' && updated.start_date <= today()
+            ? 'بدأت الإجازة — اطلب من الإدارة إنهاءها.'
+            : 'تغيّرت حالته للتو من الإدارة.';
+        return i.editReply({ content: `⏳ لم يُنفَّذ إلغاؤك: ${note}`, embeds: [leaveEmbed(updated)], components: [] });
+      }
       const member = await fetchMember(i, i.user.id);
       if (member) await leaveService.syncVacationRole(member);
       await updateRequestMessage(i.client, getDb().prepare('SELECT * FROM leave_requests WHERE id=?').get(r.id));

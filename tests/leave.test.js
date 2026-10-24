@@ -2,7 +2,7 @@
 require('./sqlite-compat').install();
 process.env.DB_PATH = ':memory:';
 process.env.DOTENV_CONFIG_QUIET = 'true';
-const { test, beforeEach } = require('node:test');
+const { test, describe, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const { Collection, ComponentType } = require('discord.js');
 const { openMemoryDb, getDb } = require('../src/database');
@@ -384,4 +384,88 @@ test('قواعد الإجازات المتقدمة تُحفظ من /setup وتظ
   await resolveComponent('setup:policies-advanced').handler(shown, []);
   assert(shown.modal.toJSON().components.length <= 5, 'النموذج داخل حد Discord');
   assert.equal(shown.modal.toJSON().components.filter(c => c.type === ComponentType.Label).length, 5);
+});
+
+// ===== سباق مراجعة الإجازات — الكتابة الثانية لا تنفَّذ (تقرير التدقيق) =====
+// الأكثر دقة في السباقين الصغيرين أن نوضّح: نفس الطلب تضغط عليه نقرتان متلاصقتان
+// على بطاقة أو لوحة في خيطين. المحاكاة هنا حتمية: نحرّك الصف داخل
+// deferUpdate/deferReply الخاص بالمراجع الخاسر (أي بين قراءته وكتابته)، ثم
+// يجب أن يخسر الكاتبُ الثاني كل آثاره المتصاعدة (رتبة in vacation، حالة
+// العضو on_leave، سجل التدقيق، خاص العضو، تحديث بطاقة) ويرى الحالة الحقيقية.
+describe('سباق مراجعة الإجازات', () => {
+  const audit = require('../src/services/audit');
+  const RIVAL = '424242424242424242';
+
+  /** الخصم يُعتمد الطلب داخل نافذة السباق. */
+  const rivalApproves = (id) => getDb().prepare(`UPDATE leave_requests SET status='approved', reviewed_by=?, reviewed_at=datetime('now') WHERE id=?`).run(RIVAL, id);
+  /** الخصم يرفض الطلب داخل نافذة السباق. */
+  const rivalRejects = (id) => getDb().prepare(`UPDATE leave_requests SET status='rejected', reviewed_by=?, review_reason='قرار متزامن من إداري آخر', reviewed_at=datetime('now') WHERE id=?`).run(RIVAL, id);
+
+  test('موافقة سباق: فاز بالطلب مراجعٌ آخر — الخاسر بلا رتبة ولا حالة ولا سجل ولا خاص', async () => {
+    seedStaff(IDS.peer);
+    const request = seedLeave({ userId: IDS.peer, status: 'pending', start: D(8), end: D(10) });
+    const loser = interaction({ level: LEVELS.MANAGEMENT, id: IDS.boss });
+    const realDefer = loser.deferUpdate.bind(loser);
+    loser.deferUpdate = async () => { await realDefer(); rivalApproves(request.id); };
+    await resolveComponent('leave:approve').handler(loser, [String(request.id)]);
+    const row = leaves.get(request.id);
+    assert.equal(row.status, 'approved');
+    assert.equal(row.reviewed_by, RIVAL, 'قرار المتسبق باقٍ — الخاسر لم يمسحه');
+    assert.equal(row.role_applied_at, null, 'الخاسر لم يمنح رتبة in vacation');
+    assert.equal(row.role_grant_at, null, 'الخاسر لم يكتب موعد المنح');
+    assert.equal(getDb().prepare('SELECT status FROM staff_members WHERE user_id = ?').get(IDS.peer)?.status, 'active', 'الخاسر لم يحوّل العضو إلى on_leave');
+    assert.equal(audit.count({ action: 'leave_approved', actorId: IDS.boss }), 0, 'الخاسر لم يسجّل موافقة');
+    assert.equal(mockClient.sent.length, 0, 'الخاسر لم يرسل خاصاً للعضو');
+    assert.ok(loser.payload, 'للخاسر ردّ صادق بعدئيه');
+    assert.match(loser.payload.content, /لم يُنفَّذ شيء من نقرتك/, 'الرد الصادق يخبره أن نقرته سقطت');
+    assert.match(JSON.stringify(loser.payload), /معتمد/, 'البطاقة تعرض الحالة الحقيقية');
+  });
+
+  test('رفض سباق: مراجعُ آخر سبقه — الخاسر بلا سجل رفض ولا خاص بمسببه', async () => {
+    seedStaff(IDS.peer);
+    const request = seedLeave({ userId: IDS.peer, status: 'pending', start: D(8), end: D(10) });
+    const loser = interaction({ level: LEVELS.MANAGEMENT, id: IDS.boss, texts: { reason: 'سبب الخاسر' } });
+    const realDefer = loser.deferReply.bind(loser);
+    loser.deferReply = async () => { await realDefer(); rivalRejects(request.id); };
+    await resolveComponent('leave:rejectmodal').handler(loser, [String(request.id)]);
+    const row = leaves.get(request.id);
+    assert.equal(row.status, 'rejected');
+    assert.equal(row.reviewed_by, RIVAL);
+    assert.equal(row.review_reason, 'قرار متزامن من إداري آخر', 'سبب الخاسر لم يمسح مراجعة الغير');
+    assert.equal(audit.count({ action: 'leave_rejected', actorId: IDS.boss }), 0, 'الخاسر لم يسجّل رفضاً مزدوجاً');
+    assert.equal(mockClient.sent.length, 0, 'الخاسر لم يبعث للعضو برفض لم يصدر عنه');
+    assert.match(loser.payload.content, /لم يُسجَّل سبب رفضك/);
+  });
+
+  test('إلغاء إداري سباق: الطلب اعتمده غيرُه خلال النافذة — لا يُصفى إلغاء الخاسر', async () => {
+    seedStaff(IDS.peer);
+    const request = seedLeave({ userId: IDS.peer, status: 'pending', start: D(8), end: D(10) });
+    const loser = interaction({ level: LEVELS.MANAGEMENT, id: IDS.boss });
+    const realDefer = loser.deferUpdate.bind(loser);
+    loser.deferUpdate = async () => { await realDefer(); rivalApproves(request.id); };
+    await resolveComponent('leave:cancelquick').handler(loser, [String(request.id)]);
+    const row = leaves.get(request.id);
+    assert.equal(row.status, 'approved');
+    assert.equal(row.reviewed_by, RIVAL, 'الاعتماد باقٍ — الإلغاء لم يمسه');
+    assert.equal(row.cancel_reason, null, 'لا سبب إلغاء من الخاسر');
+    assert.equal(row.end_reason, null, 'لا إنهاء إداري من الخاسر');
+    assert.equal(audit.count({ action: 'leave_cancelled_by_admin', actorId: IDS.boss }), 0, 'الخاسر لم يسجّل إلغاءً');
+    assert.equal(mockClient.sent.length, 0, 'الخاسر لم يبلّغ العضو بإلغاء لم يقع');
+    assert.match(loser.payload.content, /لم يُنفَّذ إلغاؤك/);
+  });
+
+  test('إلغاء ذاتي سباق: رفضه الإدارة قبل إلغائه — لا مزامنة رتبة على مراجعة غيره', async () => {
+    seedStaff(IDS.me, 'support');
+    const request = seedLeave({ userId: IDS.me, status: 'pending', start: D(8), end: D(10) });
+    const owner = interaction({ level: LEVELS.STAFF, id: IDS.me });
+    const realDefer = owner.deferUpdate.bind(owner);
+    owner.deferUpdate = async () => { await realDefer(); rivalRejects(request.id); };
+    await resolveComponent('leave:confirmcancel').handler(owner, [String(request.id)]);
+    const row = leaves.get(request.id);
+    assert.equal(row.status, 'rejected');
+    assert.equal(row.reviewed_by, RIVAL);
+    assert.equal(row.cancel_reason, null, 'لا إلغاء ذاتي فوق رفض الإدارة');
+    assert.equal(mockClient.sent.length, 0, 'لا خاص بأثر لم يوقعه المالك');
+    assert.match(owner.payload.content, /رُفض الطلب من الإدارة قبل إلغائك/, 'الرد يبيّن سبب سقوط الإلغاء');
+  });
 });
