@@ -187,10 +187,12 @@ const WARNING_TYPES = {
 // ===== التقدير و«جدار الإنجازات» =====
 // التقدير هنا ترشيحٌ للزملاء يُرسل للمراجعة، وليس نظام نقاط.
 //
-// points = 0 لأن نظام النقاط (نقاط التقدير) أُزيل من المشروع بالكامل:
-// حُذفت services/points.js وجدول promotion_points وأوامر /give-points وأمر التقدير.
-// لذلك لا يُكتب أي مبلغ في أي مكان هنا، ولا يوجد سجل أرصدة يُحدَّث.
-// الاعتماد يعلن الإنجاز في قناة staff-wins ويبلّغ العضو، ولا يمنحه أي رصيد.
+// points = 0 لأن التقدير (ترشيح الأقران) لا يمنح نقاطاً — قرار واضح لا بقايا
+// نظام قديم: المرشَّح يُعلن في staff-wins ويُعرض في جسر المراجعة، والنقاط
+// تُمنح من مسارها الموثّق فقط في promotion_points (وهو نظام دفتر النقاط
+// الحيّ الذي يشمل مكافأة الأفضل في الشهر +50 عبر المجدول — scheduler
+// monthlyBest). فلا يُقرأ من هذا الجدول أي «تعارض»: التقدير بلا نقاط،
+// والنقاط لها مسارها الخاص.
 //
 // dailyCap: سقف الترشيحات اليومية لكل مرشِّح (الرقم اختير لأن README:120
 // ينص على "ترشيحاً محدوداً يومياً" دون تحديد رقم — 3 توازن بين التشجيع ومعالجة الإزعاج).
@@ -263,12 +265,6 @@ const MOD_PROMOTIONS = [
      requiresConflictResolution: true, fastResponseRequired: true,
      approvers: 'Head Of Moderators', approvals: 1, approvalLevel: LEVELS.MANAGEMENT,
    },
-   {
-     from: 'Admin', to: 'Head Of Moderators', months: 6, actions: 60,
-     maxWarnings: 0, windowDays: 180, warnWindowDays: 180, minActiveDays: 25, maxWrongDecisions: 0,
-     requiresConflictResolution: true, fastResponseRequired: true, stableMonths: 1, stableMinPoints: 75,
-     approvers: 'Head الحالي + إدارة السيرفر', approvals: 2, approvalLevel: LEVELS.MANAGEMENT,
-   },
  ];
 
 /** ضوابط عامة تُستخدم في أكثر من خدمة (ترقيات، تقارير، تقييمات) */
@@ -304,7 +300,8 @@ const POINTS_THRESHOLDS = {
     'Trial Moderator': 200,
     'Moderator': 550,
     'Senior Moderator': 1000,
-    'Admin': 1500, // Estimated — Admin → Head Of Moderators (6 months, Management-approved). Await user confirmation.
+    // قرار المالك D10 (2026-10-24): Admin وما فوق تعيين يدوي — لا عتبة ولا
+    // مسار تلقائي (خلايا العتبة المقدَّرة 1500 أزيلت).
   },
 };
 

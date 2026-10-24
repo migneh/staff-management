@@ -73,9 +73,9 @@ describe('أمان المكوّنات (الصلاحيات المركزية)', ()
 describe('بوابات الترقية ونصابها', () => {
   test('مستوى الموافقة لكل ترقية متسق مع من أُعلن', () => {
     const gates = Object.fromEntries([...SUPPORT_PROMOTIONS, ...MOD_PROMOTIONS].map(r => [`${r.from}→${r.to}`, r]));
-    // Admin في فريق الإشراف = مستوى 3، فلا يكفي لبوابة مستوى 4
-    assert.equal(gates['Admin→Head Of Moderators'].approvalLevel, LEVELS.MANAGEMENT);
-    assert.equal(gates['Admin→Head Of Moderators'].approvals, 2);
+    // قرار المالك D10 (2026-10-24): Admin وما فوق تعيين يدوي — المسار
+    // Admin→Head Of Moderators أزيل، فلا بوابة له هنا ولا عتبة نقاط له.
+    assert.equal(gates['Admin→Head Of Moderators'], undefined, 'المسار اليدوي لا يعلن ببوابة');
     assert.equal(gates['Senior Moderator→Admin'].approvalLevel, LEVELS.MANAGEMENT);
     assert.equal(gates['Trial Moderator→Moderator'].approvalLevel, LEVELS.SUPERVISOR);
     assert.equal(gates['Supervisor Manager→Support Office'].approvalLevel, LEVELS.BOSS);

@@ -29,7 +29,8 @@ const PROMO_FAMILIES = {
   // إشراف: الإجراءات المعالجة، القرارات الخاطئة، سرعة «تقييم المشرف»، الأداء المستقر
   modTrial: { team: 'moderation', rank: 'Trial Moderator', sinceDays: 60 },
   modSenior: { team: 'moderation', rank: 'Moderator', sinceDays: 120 },
-  modAdmin: { team: 'moderation', rank: 'Admin', sinceDays: 210, actions: 65, savedPoints: 80 },
+  // قرار المالك D10 (2026-10-24): Admin وما فوق تعيين يدوي — لا عائلة
+  // بوابة لرتبة Admin، فلا مسار تلقائي يُختبر أصلاً.
   // دعم: الرسائل، تقييم العملاء، سرعة «متوسط التكتات»، تقييم المشرف
   supExpert: { team: 'support', rank: 'Support', sinceDays: 120 },
   supHelper: { team: 'support', rank: 'Helper', sinceDays: 90 },
@@ -37,11 +38,10 @@ const PROMO_FAMILIES = {
 
 // رصيد نقاط يجتاز بوابة «نقاط الترقية» في كل عائلة. القيمة هي عتبة الرتبة
 // الحالية في POINTS_THRESHOLDS بالضبط — لأن البوابة `>=` لا `>`، فلا حاجة
-// لفارق. Admin عتبة مقدَّرة 1500 → Head Of Moderators (6 أشهر، إدارة).
+// لفارق. قرار المالك D10: لا مدخل لرتبة Admin — تعيين يدوي.
 const PROMO_SEED_POINTS = {
   'Trial Moderator': 200,   // → Moderator
   'Moderator': 550,         // → Senior Moderator
-  'Admin': 1500,            // → Head Of Moderators (estimated, matches constants.js)
   'Support': 500,           // → Support Expert
   'Helper': 200,            // → Support
 };
@@ -158,7 +158,6 @@ const PROMO_GATE_CASES = [
   { name: 'سرعة الاستجابة (تقييم المشرف)', gate: 'سرعة الاستجابة (تقييم المشرف)', family: 'modSenior', bad: { responseSpeed: 10 } },
   { name: 'سرعة الاستجابة (متوسط التكتات)', gate: 'سرعة الاستجابة', gateNot: 'تقييم المشرف', family: 'supExpert', bad: { duration: 120 } },
   { gate: 'القرارات الخاطئة', family: 'modTrial', bad: { negativeNotes: 1 } },
-  { gate: 'الأداء المستقر', family: 'modAdmin', bad: { savedPoints: 50 } },
   { gate: 'الحالة', family: 'modTrial', bad: { status: 'on_leave' } },
 ];
 

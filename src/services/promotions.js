@@ -63,12 +63,21 @@ function safeJson(text) {
   }
 }
 
-/** نقاط العضو داخل تقرير شهري محفوظ، أو null إن لم يرد فيه */
+/**
+ * نقاط العضو داخل تقرير شهري محفوظ — بصيغتها الصريحة (قرار المالك D8).
+ *
+ * الصيغة الفاعلة تحمل `points`. الصيغة القديمة تحمل `score` — وهي غير
+ * صالحة للنقاط الجديدة ولا تُترجَم صامتاً (لا استنتاج مضمر من رصيد قديم)،
+ * بل تُعلَم explicitاً كي يميّز التقرير «لا تقرير» عن «تقرير قديم الصيغة».
+ * @returns {{value:number, legacy:false}|{value:null, legacy:true}|null}
+ */
 function memberPoints(parsed, userId) {
   const members = parsed && Array.isArray(parsed.members) ? parsed.members : [];
   const row = members.find(m => m && String(m.user) === String(userId));
-  const value = row ? Number(row.points) : NaN;
-  return Number.isFinite(value) ? value : null;
+  if (!row) return null;
+  const value = Number(row.points);
+  if (Number.isFinite(value)) return { value, legacy: false };
+  return row.score != null ? { value: null, legacy: true } : null;
 }
 
 /**
@@ -91,25 +100,37 @@ function stability(userId, months, minPoints, team) {
   // النتيجة هي نفسها: تقريرا الفريقين لنفس الشهر شهر واحد لا شهران، ونسخة فريق العضو مفضّلة.
   const rows = db.prepare(`SELECT period, data FROM saved_reports WHERE report_type = 'monthly' ORDER BY period DESC`).all();
   const chosen = new Map();
+  const legacyPeriods = new Set();
   for (const row of rows) {
     const period = String(row.period).split(':')[0];
     const preferred = !!(team && String(row.period).endsWith(`:${team}`));
     const held = chosen.get(period);
     // نسخة الفريق المفضّلة لا تُستبدل، والبديل يُكتب فقط إن لم يوجد شيء بعد.
     if (held && (held.preferred || !preferred)) continue;
-    const value = memberPoints(safeJson(row.data), userId);
-    if (value == null) continue; // التقرير لا يخص هذا العضو — جرّب نسخة الفريق الأخرى
-    chosen.set(period, { value, preferred });
+    const member = memberPoints(safeJson(row.data), userId);
+    if (!member) continue; // التقرير لا يخص هذا العضو — جرّب نسخة الفريق الأخرى
+    if (member.legacy) { // صيغة score القديمة: تُعلَم ولا تُحتسب (قرار المالك D8)
+      if (!held || !held.preferred) legacyPeriods.add(period);
+      if (!held && preferred) chosen.set(period, { legacy: true, preferred });
+      continue;
+    }
+    chosen.set(period, { value: member.value, preferred });
   }
+  // الشهور ذو صيغة قديمة على نسخته المفضّلة تبقى ناقصة عمداً — الشفافية بدل
+  // الترجمة الصامتة؛ حاصلها missing لا اجتياز.
+  for (const [period, held] of chosen) if (held.legacy) chosen.delete(period);
   const periods = [...chosen.keys()].sort().reverse().slice(0, wanted);
   const points = periods.map(p => chosen.get(p).value);
   const missing = wanted - periods.length;
   const passed = missing === 0 && points.every(s => s >= floor);
+  const legacyNote = legacyPeriods.size
+    ? ` — تقارير قديمة بالصيغة score غير صالحة للنقاط: ${legacyPeriods.size}`
+    : '';
   return {
     passed, periods, points, missing,
     actual: points.length
-      ? `${points.join(' / ')} (${periods.join(' / ')})`
-      : 'لا توجد تقارير شهرية محفوظة',
+      ? `${points.join(' / ')} (${periods.join(' / ')})${legacyNote}`
+      : (legacyPeriods.size ? 'تقارير قديمة بالصيغة score غير صالحة للنقاط' : 'لا توجد تقارير شهرية محفوظة'),
     required: `${wanted} ${wanted > 1 ? 'أشهر متتالية' : 'شهر متتالٍ'} بحد ${floor}+`,
   };
 }

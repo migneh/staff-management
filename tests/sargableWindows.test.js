@@ -458,6 +458,18 @@ describe('stability يفكّ ترميز كل تقرير مرة واحدة', () =
     assert.deepEqual(st.points, [88]);
   });
 
+  test('تقرير قديم الصيغة (score) لا يُترجَم صامتاً: يُعلَم ويحسب ناقصاً (D8)', () => {
+    // قرار المالك D8 (2026-10-24): تقارير saved_reports الأقدم بها score لا
+    // points — الصمت كان يُخفي سقوطها؛ الآن خسارتها مسجلة في النتيجة نفسها.
+    seedReport('2026-02:moderation', 'moderation', [{ user: UID_, score: 120 }]);
+    seedReport('2026-01:support', 'support', [{ user: UID_, score: 130 }]);
+    const st = promotions.stability(UID_, 2, 75, 'support');
+    assert.equal(st.passed, false, 'لا صف نقاط صالح — البوابة تسقط');
+    assert.deepEqual(st.points, [], 'لا تُقرأ قيمة من الصيغة القديمة');
+    assert.equal(st.missing, 2, 'الشهر الذو صيغة قديمة ناقص عمداً لا مصادفة');
+    assert.match(st.actual, /score غير صالحة/, 'خسارة الشهر موصوفة بسببها الحقيقي لا «لا توجد تقارير»');
+  });
+
   test('يفضّل نسخة الفريق حتى لو وردت بعد نسخة الفريق الآخر في الترتيب', () => {
     // team غير support: صف moderation أولاً ثم support لنفس الشهر
     seedReport('2026-01:moderation', 'moderation', [{ user: UID_, points: 30 }]);
