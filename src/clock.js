@@ -121,7 +121,15 @@ function previousMonth(yyyymm) {
   return addDays(first, -1).slice(0, 7);
 }
 
+/** رمز الشهر التالي لـ YYYYMM */
+function nextMonth(yyyymm) {
+  const first = `${yyyymm}-01`;
+  // ٣١ يوماً من أول أيّ شهر لا يصعد شهرين كاملين (أطول شهر ٣١ يوماً)، فالنتيجة
+  // داخل الشهر التالي دائماً — وطبقة السنة والكبيسة يحملها addDays نفسُها.
+  return addDays(first, 31).slice(0, 7);
+}
+
 module.exports = {
   TZ, dayOf, today, nowIso, parseStamp, isValidDate, addDays, dayStartStamp,
-  dayWindow, daysBetween, hoursSince, monthsSince, discordTs, previousMonth,
+  dayWindow, daysBetween, hoursSince, monthsSince, discordTs, previousMonth, nextMonth,
 };

@@ -591,10 +591,10 @@ async function weeklyReport(client) {
 
 async function monthlyReport(client) {
   const period = today().slice(0, 7);
-  const prevPeriod = addDays(today().slice(0, 7) + '-01', -1).slice(0, 7);
+  const prevPeriod = clock.previousMonth(period);
   const monthStart = `${period}-01`;
-  const nextMonth = addDays(monthStart, 1).slice(0, 7);
-  const monthEnd = addDays(nextMonth + '-01', -1);
+  const nextMonth = clock.nextMonth(period);
+  const monthEnd = addDays(`${nextMonth}-01`, -1);
   const db = getDb();
   const onLeave = activeLeaveUsers();
   const embeds = [];

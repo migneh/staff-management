@@ -35,9 +35,14 @@ describe('الساعة (clock)', () => {
     assert.equal(clock.addDays('2024-02-28', 1), '2024-02-29');
     assert.equal(clock.addDays('ليس-تاريخاً', 1), null);
   });
-  test('previousMonth وisValidDate', () => {
+  test('previousMonth وnextMonth وisValidDate', () => {
     assert.equal(clock.previousMonth('2026-01'), '2025-12');
     assert.equal(clock.previousMonth('2026-03'), '2026-02');
+    assert.equal(clock.nextMonth('2026-12'), '2027-01');
+    assert.equal(clock.nextMonth('2024-02'), '2024-03');
+    // التماثل: العودة والإياب لا يفقدان شهراً — التقرير الشهري يحسب نافذته بالرمزين مشابهاً
+    assert.equal(clock.nextMonth(clock.previousMonth('2026-07')), '2026-07');
+    assert.equal(clock.previousMonth(clock.nextMonth('2026-07')), '2026-07');
     assert.equal(clock.isValidDate('2026-02-30'), false);
     assert.equal(clock.isValidDate('2026-02-28'), true);
   });
