@@ -266,8 +266,8 @@ npm run deploy && npm start
 npm run check     # ESLint + الاختبارات + بوابات سجل الأوامر وتحديث README
 ```
 
-نفس الخطوات جاهزة كسير عمل GitHub Actions في `docs/ci-workflow.yml`
-(انسخه إلى `.github/workflows/ci.yml` لتفعيله على كل دفع).
+نفس الخطوات جاهزة كسير عمل GitHub Actions في `.github/workflows/ci.yml`
+وهو مُفعَّل على كل دفع أصلاً.
 أي مهمة فشلت أو تجاوزت دورتها تُسجَّل في جدول `job_runs`، ويعرض `/system-status`
 آخر تشغيل لكل مهمة مع الأخطاء وأحجام الجداول وآخر نسخة احتياطية — ولا تعمل نسختان
 من المهمة نفسها في وقت واحد.
