@@ -6,6 +6,7 @@ const {
 const { LEVELS, FAQ_CATEGORIES } = require('../constants');
 const faq = require('../services/faq');
 const audit = require('../services/audit');
+const points = require('../services/points');
 const { embed, COLORS, replyEphemeral, truncate, sendToChannel } = require('../utils');
 const { isServerManager } = require('../services/permissions');
 const kit = require('../ui/kit');
@@ -323,6 +324,31 @@ async function notifyUpdate(client, action, entry, userId, { previousCategoryId 
   await refreshPanels(client, faq.templatesShowing(entry, previousCategoryId));
 }
 
+/**
+ * نقاط المساهمة (موجة نقاط 2026-10-24): إثراء قاعدة المعرفة +5 faq_contrib.
+ *
+ * المرجع هو مدخل FAQ نفسه (idx_points_unique_ref): المقال الأولي يُكافأ مرة،
+ * وتعديلاته اللاحقة لا تُكافأ — التعديل المتكرر على مقال حيّ كان سيصنع راتباً
+ * من زر «حفظ». من يريد مكافأة إعادة صياغة مقال قديم فعلياً فالحكم على أهليتها
+ * يظل للإدارة لا لعدّاد النقاط.
+ */
+function awardEntryCredits(entry, userId) {
+  if (!entry?.id) return { ok: false };
+  try {
+    return points.add({
+      userId,
+      reasonKey: 'faq_contrib',
+      reason: `إثراء قاعدة المعرفة (#${entry.id})`,
+      refType: 'faq',
+      refId: String(entry.id),
+      addedBy: userId,
+    });
+  } catch (e) {
+    require('./logger').log('faq').warn(`نقاط مساهمة FAQ فشلت للمدخل #${entry.id}: ${e.message}`);
+    return { ok: false };
+  }
+}
+
 module.exports = {
   modals,
   commands: [
@@ -566,7 +592,9 @@ module.exports = {
       try {
         const entry = faq.add({ categoryId: cat.id, title: forms.value(i, 'title'), content: forms.value(i, 'content'), important, userId: i.user.id });
         audit.record({ action: 'faq_entry_created', actorId: i.user.id, targetId: String(entry.id), details: { title: entry.title, categoryId: entry.category_id, important }, channelId: i.channelId });
-        await replyEphemeral(i, `✅ تمت إضافة المدخل **#${entry.id}** — ${cat.name}${important ? ' (📌 يتطلب تأكيد قراءة)' : ''}.`, COLORS.success);
+        // نقاط المساهمة: بعد إنشاء الصف نجاحاً وبإحالته مرجعاً فريداً (موجة نقاط)
+        const credits = awardEntryCredits(entry, i.user.id);
+        await replyEphemeral(i, `✅ تمت إضافة المدخل **#${entry.id}** — ${cat.name}${important ? ' (📌 يتطلب تأكيد قراءة)' : ''}${credits.ok ? ' • +5 نقاط مساهمة 🎉' : ''}.`, COLORS.success);
         return notifyUpdate(i.client, 'create', entry, i.user.id);
       } catch (e) { return replyEphemeral(i, `❌ تعذّرت الإضافة: ${e.message}`, COLORS.danger); }
     },
@@ -712,5 +740,5 @@ module.exports = {
     },
   },
 
-  refreshPanels, buildPanel, templateListEmbed, panelsEmbed, parseCategories, entryEmbed,
+  refreshPanels, buildPanel, templateListEmbed, panelsEmbed, parseCategories, entryEmbed, awardEntryCredits,
 };
