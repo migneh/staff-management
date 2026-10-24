@@ -946,20 +946,40 @@ const PROMO_REMINDER_DAYS = '7';
  * الرفض الآلي بعد 30 يوماً ليس حكماً على الأداء — إنه تنظيف معلّقٍ بلا راعٍ:
  * سببه مكتوب، والعضو يُخبر بذلك وبحقّه في إعادة التقديم فوراً. والتذكير
  * (7+) لقناة الإدارة كلها: الطلب قد يعلق صمتاً أسابيع لأنه بلا من ينادي.
+ * والمستقيل ومن خرج من السيرفر حالة مختلفة: عضويتهما منتهية — يُسقط
+ * طلبُهما فوراً بذات الأثر الموثَّق، ولا يدخلهما التذكير؛ أما إجازة
+ * وتعليق فقط فيبقى طلبُهما على المسار القياسي (عذران مؤقتان لا نهايةُ عضوية).
  */
 async function processPromotionPending(client) {
   const db = getDb();
-  const expired = db.prepare(`SELECT id, user_id, from_rank, to_rank FROM promotion_requests
-    WHERE status = 'pending' AND created_at <= datetime('now', '-${PROMO_PENDING_MAX_DAYS} days')`).all();
+  // فلتر حالة العضو (وسيط ⑧): المستقيل ومن خرج من السيرفر عضويتهما منتهية،
+  // فلا أحد سيقرر طلبهما مهما طال الانتظار — يُسقط طلبُهما فوراً بذات
+  // السقوط الآلي (سبب مكتوب وتوقيع نظامي وإخبار صادق) بدل أن يعلّق حتى
+  // المهلة ويعوّل قناةَ الإدارة تذكيراً بقرارات مستحيلة. أما الإجازة
+  // والتعليق فعذران مؤقتان لا إنهاء عضوية — تبقى على المهلتين كما هما.
+  const expired = db.prepare(`SELECT pr.id, pr.user_id, pr.from_rank, pr.to_rank, st.status AS member_status
+    FROM promotion_requests pr LEFT JOIN staff_members st ON st.user_id = pr.user_id
+    WHERE pr.status = 'pending'
+      AND (pr.created_at <= datetime('now', '-${PROMO_PENDING_MAX_DAYS} days')
+        OR st.status IN ('resigned', 'removed'))`).all();
   for (const r of expired) {
-    const reason = `انقضت مهلة القرار (${PROMO_PENDING_MAX_DAYS} يوماً بلا موافقة) — رفض آلي بلا محاكمة، يحق لك إعادة التقديم`;
+    const gone = r.member_status === 'resigned' || r.member_status === 'removed';
+    const reason = gone
+      ? `أُغلق آلياً لانتهاء صاحب الطلب بالفريق (حالة: ${r.member_status === 'resigned' ? 'مستقيل' : 'خرج من السيرفر'}) — رفض بلا محاكمة، وإن عاد فحقّه في إعادة التقديم قائم`
+      : `انقضت مهلة القرار (${PROMO_PENDING_MAX_DAYS} يوماً بلا موافقة) — رفض آلي بلا محاكمة، يحق لك إعادة التقديم`;
     promoService.review(r.id, 'rejected', 'system', reason);
-    audit.record({ action: 'promotion_request_expired', actorId: 'system', targetId: r.user_id, details: { requestId: r.id, fromRank: r.from_rank, toRank: r.to_rank } });
-    await dm(client, r.user_id, { embeds: [embed('⏱️ أُغلق طلب الترقية آلياً', `طلبك **#${r.id}** (${r.from_rank} → ${r.to_rank}) لم يُقرَّر خلال **${PROMO_PENDING_MAX_DAYS} يوماً** فأُغلق آلياً.\nيمكنك تقديم طلب جديد متى اكتملت شروطك بالأمر \`/request-promotion\`.`, COLORS.warning)] });
-    logger.info(`⏱️ طلب ترقية #${r.id} أُسقط آلياً بعد انتهاء المهلة.`);
+    audit.record({ action: 'promotion_request_expired', actorId: 'system', targetId: r.user_id, details: { requestId: r.id, fromRank: r.from_rank, toRank: r.to_rank, memberStatus: r.member_status || null } });
+    await dm(client, r.user_id, { embeds: [embed(gone ? '📦 أُغلق طلب الترقية لانتهاء الصلة بالفريق' : '⏱️ أُغلق طلب الترقية آلياً',
+      gone
+        ? `طلبك **#${r.id}** (${r.from_rank} → ${r.to_rank}) أُغلق آلياً لانتهاء صلتك بالفريق.\nلو عدت للعمل لاحقاً يمكنك التقديم مجدداً بالأمر \`/request-promotion\`.`
+        : `طلبك **#${r.id}** (${r.from_rank} → ${r.to_rank}) لم يُقرَّر خلال **${PROMO_PENDING_MAX_DAYS} يوماً** فأُغلق آلياً.\nيمكنك تقديم طلب جديد متى اكتملت شروطك بالأمر \`/request-promotion\`.`,
+      COLORS.warning)] });
+    logger.info(`⏱️ طلب ترقية #${r.id} أُسقط آلياً (${gone ? 'صاحبه منتهي الصلة' : 'انتهاء المهلة'}).`);
   }
-  const waiting = db.prepare(`SELECT id, user_id, to_rank FROM promotion_requests
-    WHERE status = 'pending' AND created_at <= datetime('now', '-${PROMO_REMINDER_DAYS} days')`).all();
+  const waiting = db.prepare(`SELECT pr.id, pr.user_id, pr.to_rank FROM promotion_requests pr
+    LEFT JOIN staff_members st ON st.user_id = pr.user_id
+    WHERE pr.status = 'pending' AND pr.created_at <= datetime('now', '-${PROMO_REMINDER_DAYS} days')
+      AND (st.status IS NULL OR st.status NOT IN ('resigned', 'removed'))`).all();
   if (waiting.length) {
     const lines = [`⏳ **${waiting.length}** طلب ترقية بانتظار القرار منذ ${PROMO_REMINDER_DAYS} يوماً فأكثر:`,
       ...waiting.slice(0, 10).map(r => `• #${r.id} <@${r.user_id}> → ${r.to_rank}`)];
