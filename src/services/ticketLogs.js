@@ -94,8 +94,13 @@ function parseExternalTicketMessage(message) {
   if (!message?.author?.bot) return null;
   const sourceChannel = settings.channelId('ticket-source-logs');
   if (!sourceChannel || message.channel?.id !== sourceChannel) return null;
+  // بوابة البوت إلزامية (تقرير التدقيق): غياب المعرّف = إغلاق المصدر لا «قبول
+  // أي بوت»؛ وكان النمط السابق يؤشر إغفال رسائل أي بوت داخل القناة فيُحتسب
+  // تكتات ونقاطاً من رسائل بوت خارجي، ويصل التقييم السلبي وارداً من بوت
+  // غير كهنّ التعيين فتجمّد موظف دعم بريء. المعرّف من /setup أو config.json.
   const configuredBot = settings.ticketLogBotId();
-  if (configuredBot && message.author.id !== configuredBot) return null;
+  if (!configuredBot) return null;
+  if (message.author.id !== configuredBot) return null;
 
   const parts = messageParts(message);
   const ownerValue = valueAfterLabel(parts, ['صاحب\\s+التكت', 'صاحب\\s+التذكرة', 'صاحب\\s+التذكره']);

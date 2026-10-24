@@ -515,4 +515,31 @@ describe('استيراد سجل التكتات الخارجي', () => {
     assert.equal(manualFallback.manualDuplicate, true);
     assert.equal(getDb().prepare('SELECT COUNT(*) c FROM ticket_metrics').get().c, 1);
   });
+
+  test('بوابة بوت التكتات مغلقة افتراضياً: بلا معرف مضبوط لا استيراد، وغير المضبوط مرفوض', () => {
+    const settings = require('../src/services/settings');
+    const ticketLogs = require('../src/services/ticketLogs');
+    const message = {
+      id: '223456789012345678',
+      url: 'https://discord.com/channels/g/c/m2',
+      author: { bot: true, id: '777', tag: 'Ticket Bot' },
+      channel: { id: '999' },
+      embeds: [{ title: 'سجل التكت رقم close-3001', description: [
+        'صاحب التكت : <@1504915482904363099>',
+        'مستلم التذكرة : <@1005171993940852796>',
+        'الي قفل التكت : <@1442619466973980735>',
+        'رقم التكت : #close-3001',
+        'جميع الرسائل : [اضغط هنا](https://example.com/close-3001.html)',
+      ].join('\n') }],
+    };
+    settings.setChannel('ticket-source-logs', '999');
+    settings.setTicketLogBotId(null);
+    assert.equal(ticketLogs.parseExternalTicketMessage(message), null, 'غياب تعريف البوت يجب أن يغلق المصدر لا أن يقبل أي بوت');
+    settings.setTicketLogBotId('888');
+    assert.equal(ticketLogs.parseExternalTicketMessage(message), null, 'بوت غير المضبوط يجب رفض رسائله');
+    settings.setTicketLogBotId('777');
+    const parsed = ticketLogs.parseExternalTicketMessage(message);
+    assert.equal(parsed?.ticketId, 'close-3001');
+    assert.equal(parsed?.claimer, '1005171993940852796');
+  });
 });

@@ -79,6 +79,7 @@ const COMPONENT_ACCESS = {
   'setup:pickchannel': { adminOnly: true },
   'setup:pickactivity': { adminOnly: true },
   'setup:pickticketsource': { adminOnly: true },
+  'setup:ticketbot': { adminOnly: true },
   'setup:pickgovernance': { adminOnly: true },
   'setup:autoroles': { adminOnly: true },
   'setup:autochannels': { adminOnly: true },

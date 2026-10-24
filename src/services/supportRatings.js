@@ -17,8 +17,12 @@ function normalize(text) {
 function parse(message) {
   if (!message?.author?.bot || !message.id) return null;
   if (!settings.channelId('support-rating-logs') || (message.channelId || message.channel?.id) !== settings.channelId('support-rating-logs')) return null;
+  // بوابة البوت إلزامية (تقرير التدقيق): بلا معرف مضبوط لا استيراد — كان
+  // «أي بوت في القناة» يمرّ فتُحتسب تقييماته ويُجمّد موظف بريء بثلاث سلبية
+  // من بوت غير الشرع في تقييم دعمكم. يُضبط من /setup (صفحة التقييمات).
   const botId = settings.policy('ratingBotId');
-  if (botId && message.author.id !== botId) return null;
+  if (!botId) return null;
+  if (message.author.id !== botId) return null;
   const text = normalize(messageParts(message).join('\n'));
   const headers = [...text.matchAll(/تم\s+تقييم\s+الاداري|العضو\s+(?:الي|اللي|الذي)\s+(?:قييم|قيم)|عدد\s+النجوم/g)];
   if (headers.length !== 3) return null;

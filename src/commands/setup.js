@@ -115,10 +115,10 @@ function ratingsPage() {
   const botId = settings.policy('ratingBotId');
   const e = embed('⭐ ربط تقييمات الدعم', [
     '**١. اختر قناة رسائل التقييم.** يجب أن يستطيع البوت رؤيتها وقراءة رسائلها.',
-    '**٢. اختر بوت التقييم (مستحسن).** تركه فارغاً يسمح برسائل أي بوت في القناة المحددة.',
+    '**٢. اختر بوت التقييم (مطلوب الآن).** تركه فارغاً يوقف التتبع تماماً — لا نتقبل رسائل أي بوت كي لا تُحتسب تقييمات مزيَّفة.',
     '',
     `القناة: ${channelId ? `<#${channelId}>` : 'غير مربوطة — التتبع متوقف'}`,
-    `البوت المسموح: ${botId ? `<@${botId}>` : 'أي بوت في القناة المختارة'}`,
+    `البوت المسموح: ${botId ? `<@${botId}>` : 'غير محدد — التتبع متوقف حتى تختار البوت'}`,
     '',
     'الصيغة: «تم تقييم الاداري» ثم منشنه، «العضو الي قييم» ثم منشن العضو، «عدد النجوم» من ⭐ إلى ⭐⭐⭐⭐⭐.',
     'تُقرأ الرسائل الجديدة فقط؛ لا يُعاد استيراد تاريخ القناة. الرسالة المكررة لا تُحتسب مرتين. لا يتم الرد في قناة المصدر.',
@@ -127,7 +127,7 @@ function ratingsPage() {
   const channel = new ChannelSelectMenuBuilder().setCustomId('setup:rating-channel').setPlaceholder('١ · اختر قناة التقييمات، أو امسح الاختيار للإيقاف')
     .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setMinValues(0).setMaxValues(1);
   if (channelId) channel.setDefaultChannels(channelId);
-  const bot = new UserSelectMenuBuilder().setCustomId('setup:rating-bot').setPlaceholder('٢ · اختر بوت التقييم فقط (اختياري)').setMinValues(0).setMaxValues(1);
+  const bot = new UserSelectMenuBuilder().setCustomId('setup:rating-bot').setPlaceholder('٢ · اختر بوت التقييم فقط (مطلوب)').setMinValues(0).setMaxValues(1);
   if (botId) bot.setDefaultUsers(botId);
   return { embeds: [e], components: [new ActionRowBuilder().addComponents(channel), new ActionRowBuilder().addComponents(bot),
     new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('setup:home').setLabel('العودة إلى الإعداد').setStyle(ButtonStyle.Secondary))] };
@@ -137,13 +137,20 @@ function ratingsPage() {
 function ticketSourcePage() {
   const cur = settings.channelId('ticket-source-logs');
   const botId = settings.ticketLogBotId();
+  // البوت لم يعد اختيارياً (تقرير التدقيق): بغير معرف مضبوط المصدر مغلقاً —
+  // قبول «أي بوت داخل القناة» كان يتيح احتساب تكتات بوت خارجي ونقاطاً زائفة.
   const e = embed('🤖 مصدر سجل التكتات الخارجي',
-    `اختر القناة التي يرسل فيها بوت التكتات رسالة الإغلاق (مثل: \`close-2127\`).\n\n**القناة الحالية:** ${cur ? `<#${cur}>` : '_غير محددة_'}\n**معرف البوت (اختياري):** ${botId ? `\`${botId}\`` : '_أي بوت داخل القناة_' }\n\nبعد تحديدها سيقرأ Staff Manager الرسالة تلقائياً ويحتسب التكت والنقاط. لا يحتاج البوتان إلى التكامل مع بعضهما، ولا يحتاج الدعم لاستخدام \`/log-ticket\`.`, COLORS.info);
+    `اختر القناة التي يرسل فيها بوت التكتات رسالة الإغلاق (مثل: \`close-2127\`)، ثم اختر بوت التكتات نفسه.\n\n**القناة الحالية:** ${cur ? `<#${cur}>` : '_غير محددة_'}\n**البوت المسموح:** ${botId ? `<@${botId}>` : '_غير محدد — التتبع متوقف حتى تختار البوت_'}\n\nالبوت مطلوب الآن: بغير معرف مضبوط لا تُقبل رسائل أي بوت في القناة. بعد التحديد سيقرأ Staff Manager رسائل إغلاق ذلك البوت وحده ويحتسب التكت والنقاط. لا يحتاج البوتان إلى التكامل مع بعضهما، ولا يحتاج الدعم لاستخدام \`/log-ticket\`.`, COLORS.info);
   const select = new ActionRowBuilder().addComponents(
     new ChannelSelectMenuBuilder().setCustomId('setup:pickticketsource').setPlaceholder('🔽 اختر قناة سجل بوت التكتات').addChannelTypes(ChannelType.GuildText).setMinValues(1).setMaxValues(1),
   );
-  const nav = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('setup:home').setLabel('الرئيسية').setEmoji('🏠').setStyle(ButtonStyle.Secondary));
-  return { embeds: [e], components: [select, nav] };
+  const bot = new UserSelectMenuBuilder().setCustomId('setup:ticketbot').setPlaceholder('🔽 اختر بوت التكتات فقط (مطلوب)').setMinValues(0).setMaxValues(1);
+  if (botId) bot.setDefaultUsers(botId);
+  return { embeds: [e], components: [
+    select,
+    new ActionRowBuilder().addComponents(bot),
+    new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('setup:home').setLabel('الرئيسية').setEmoji('🏠').setStyle(ButtonStyle.Secondary)),
+  ] };
 }
 
 // ===== سياسات الإجازات والاستقالة =====
@@ -459,6 +466,12 @@ module.exports = {
     },
     'setup:pickticketsource': async (i) => {
       settings.setChannel('ticket-source-logs', i.values[0]);
+      return i.update(ticketSourcePage());
+    },
+    'setup:ticketbot': async (i) => {
+      const id = i.values[0];
+      if (id && !i.users.get(id)?.bot) return replyEphemeral(i, 'اختر حساب البوت الذي ينشر سجلات التكتات، وليس عضواً بشرياً.', COLORS.warning);
+      settings.setTicketLogBotId(id || null);
       return i.update(ticketSourcePage());
     },
     'setup:pickgovernance': async (i) => {

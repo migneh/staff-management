@@ -19,7 +19,9 @@ function message(extra = {}) {
 function staff(id = IDS.staff, team = 'support', status = 'active') {
   getDb().prepare('INSERT INTO staff_members (user_id, username, team, rank, status) VALUES (?, ?, ?, ?, ?)').run(id, 'tester', team, team === 'support' ? 'Support' : 'Moderator', status);
 }
-beforeEach(() => { openMemoryDb(); settings.setChannel('support-rating-logs', IDS.channel); });
+// البوت مضبوط في كل اختبار — البوابة مغلقة افتراضياً بعد إغلاقها (تقرير التدقيق):
+// غياب بوت مضبوط يعني «لا استيراد» لا «أي بوت يمر».
+beforeEach(() => { openMemoryDb(); settings.setChannel('support-rating-logs', IDS.channel); settings.setPolicy('ratingBotId', IDS.bot); });
 
 test('يحلل صيغة المستخدم حرفياً ويربط كل منشن بعنوانه', () => {
   const parsed = ratings.parse(message());
@@ -54,6 +56,15 @@ test('يرفض القناة الخطأ والبشر والبوت غير المس
   assert(ratings.parse(message()));
   settings.setChannel('support-rating-logs', null);
   assert.equal(ratings.parse(message()), null);
+});
+
+test('بوابة البوت مغلقة افتراضياً: بلا بوت مضبوط لا استيراد، وغير المضبوط مرفوض', () => {
+  settings.setPolicy('ratingBotId', null);
+  assert.equal(ratings.parse(message()), null, 'غياب تعريف البوت يجب أن يغلق التتبع لا أن يقبل أي بوت');
+  settings.setPolicy('ratingBotId', '999888777666555444');
+  assert.equal(ratings.parse(message()), null, 'بوت غير المضبوط يجب رفض تقييماته');
+  settings.setPolicy('ratingBotId', IDS.bot);
+  assert(ratings.parse(message()), 'بوت التقييم المضبوط نفسه يمر من البوابة');
 });
 
 test('يسجل التقييم مرة واحدة مع التدقيق دون إنشاء تكت أو نقاط', () => {
