@@ -8,6 +8,7 @@ const assert = require('node:assert/strict');
 const { openMemoryDb, getDb } = require('../src/database');
 const points = require('../src/services/points');
 const settings = require('../src/services/settings');
+const clock = require('../src/clock');
 const cmd = require('../src/commands/my-points');
 
 beforeEach(() => openMemoryDb());
@@ -99,4 +100,42 @@ test('/my-points — التنفيذ: رد خفي للمسجَّل، وفحص ا�
   await execute({ user: { id: 'ghost' }, reply: async p => { stranger.push(p); } });
   assert.equal(stranger.length, 1);
   assert.match(String(stranger[0].embeds?.[0]?.toJSON?.().description ?? ''), /مسجل/, 'غير المسجل يُرفض بسجل واضح');
+});
+
+test('/my-points — بند «إلى العتبة»: عتبة انتقالية وتقدير وتيرة بأرقام عربية (موجة نقاط)', async () => {
+  seedStaff('u7', 1); // رتبة Support وتيم support → العتبة الكاملة 500
+  // النافذة الانتقالية (D7) منذ 10 أيام: floor(500/3)=166 !== ramped 83 → العتبة 166
+  settings.setPolicy('points_epoch_started_at', clock.addDays(clock.today(), -10));
+  const ins = getDb().prepare(`INSERT INTO promotion_points (user_id, points, reason_key, reason, rank_epoch, created_at)
+    VALUES (?, ?, ?, ?, 1, datetime('now', ?))`);
+  ins.run('u7', 60, 'star_week', 'نجم الأسبوع', '-2 days');
+  ins.run('u7', 40, 'faq_contrib', 'مقال معرفة', '-3 days');
+
+  const replies = [];
+  await cmd.commands[0].execute({ user: { id: 'u7' }, reply: async p => { replies.push(p); } });
+  const card = replies[0].embeds[0].toJSON();
+  const progress = card.fields.find(f => f.name.includes('عتبة'));
+  assert.ok(progress, 'حقل «إلى عتبة الترقية» يظهر لرتبة ذات عتبة');
+  assert.match(progress.value, /انتقالية/, 'الحالة الانتقالية معلنة صريحاً لا مخفية');
+  assert.match(progress.value, /١٦٦/, 'عتبة اليوم 166 بأرقام عربية');
+  assert.match(progress.value, /نقصك/, 'الفجوة قول لا تخمين');
+  assert.match(progress.value, /وتيرتك/, 'الوتيرة من آخر 4 أسابيع ظاهرة');
+  assert.match(progress.value, /٣ أسبوع/, 'وتيرة 25/أسبوع وفجوة 66 → تقدير 3 أسابيع');
+  // السقوف المعلنة في ذيل البطاقة — العدالة تحتاج أساساً معروفاً لا مفاجآت
+  assert.match(card.footer.text, /تكتات 20\/يوم/, 'سقف التكتات اليومي معلن');
+  assert.match(card.footer.text, /شات 5\/يوم/, 'سقف الشات معلن');
+  assert.match(card.footer.text, /تغطية 2\/يوم/, 'سقف التغطية معلن');
+});
+
+test('/my-points — أثناء التجميد: الوتيرة تُعلن متوقفة لا تُختلق', () => {
+  const card = cmd.renderLedger({
+    member: { user_id: 'u8', rank: 'Support', rank_epoch: 1 },
+    rows: [],
+    balance: 10,
+    freeze: { frozen: true, until: '2030-01-01 00:00:00', reason: 'ثلاثة تقييمات سلبية' },
+    progress: { base: 500, threshold: 166, transitional: true, daysLeft: 50, remaining: 156, past: 0, perWeek: 0, weeks: null, frozen: true },
+  });
+  const value = card.toJSON().fields.find(f => f.name.includes('عتبة')).value;
+  assert.match(value, /متوقفة أثناء التجميد/, 'لا تقدير أسابيع وهمي لمجمَّد');
+  assert.doesNotMatch(value, /تقدير/, 'لا وعد بأسابيع والتجميد قائم');
 });
