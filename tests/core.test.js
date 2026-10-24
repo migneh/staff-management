@@ -58,7 +58,7 @@ const PROMO_SEED_POINTS = {
  */
 function seedLedger(id, rank, amount) {
   const db = getDb();
-  const perRow = pointsFor('faq_contrib'); // سبب بلا سقف يومي — لا يتداخل مع الزرع
+  const perRow = pointsFor('faq_contrib'); // الزرع بـ INSERT مباشر يتجاوز السقف اليومي faq_contrib — فلا يتداخل مع عدّاده
   const rows = Math.floor(amount / perRow);
   const stmt = db.prepare(`INSERT INTO promotion_points (user_id, points, reason_key, reason, ref_type, ref_id, rank_epoch)
     VALUES (?, ?, 'faq_contrib', 'رصيد مُزرَع للاختبار', 'seed', ?, 0)`);

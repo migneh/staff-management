@@ -58,12 +58,16 @@ describe('دفتر نقاط الترقية', () => {
   });
 
   test('يحسب الرصيد على حقبة الرتبة الحالية فقط', () => {
-    getDb().prepare(`INSERT INTO promotion_points (user_id, points, reason_key, reason, ref_type, ref_id, rank_epoch)
-      VALUES ('member-1', 40, 'faq_contrib', 'old epoch', 'faq', 'old-1', 0)`).run();
+    // البذرة القديمة بنصف إبانها — يوم مضى — كي لا تقع في نافذة «اليوم» التي
+    // يجمع فيها عدّاد السقف اليومي (faq_contrib أصبح سقفه منذ تقرير التدقيق).
+    const past = clock.dayWindow(clock.addDays(clock.today(), -2), clock.addDays(clock.today(), -2)).start;
+    getDb().prepare(`INSERT INTO promotion_points (user_id, points, reason_key, reason, ref_type, ref_id, rank_epoch, created_at)
+      VALUES ('member-1', 40, 'faq_contrib', 'old epoch', 'faq', 'old-1', 0, ?)`).run(past);
     getDb().prepare(`UPDATE staff_members SET rank_epoch = 1 WHERE user_id = 'member-1'`).run();
 
     assert.equal(points.getBalance('member-1'), 0);
     const grant = points.add({ userId: 'member-1', reasonKey: 'faq_contrib', refType: 'faq', refId: 'new-1' });
+    assert.equal(grant.ok, true, `يجب المنح: ${grant.reason}`);
     assert.equal(grant.balance, 5);
     assert.equal(points.getBalance('member-1'), 5);
   });

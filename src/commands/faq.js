@@ -1,4 +1,5 @@
 'use strict';
+const crypto = require('crypto');
 const forms = require('../ui/forms');
 const {
   SlashCommandBuilder, ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle, ChannelType,
@@ -327,10 +328,15 @@ async function notifyUpdate(client, action, entry, userId, { previousCategoryId 
 /**
  * نقاط المساهمة (موجة نقاط 2026-10-24): إثراء قاعدة المعرفة +5 faq_contrib.
  *
- * المرجع هو مدخل FAQ نفسه (idx_points_unique_ref): المقال الأولي يُكافأ مرة،
- * وتعديلاته اللاحقة لا تُكافأ — التعديل المتكرر على مقال حيّ كان سيصنع راتباً
- * من زر «حفظ». من يريد مكافأة إعادة صياغة مقال قديم فعلياً فالحكم على أهليتها
- * يظل للإدارة لا لعدّاد النقاط.
+ * المرجع لم يعد معرّف الصف التلقائي — تقرير التدقيق (الحرجة 1): حذف المقال
+ * وإعادة إضافته بنفس النص كان يولّد معرّفاً جديداً ومرجعاً جديداً، أي +5 في
+ * كل دورة، وسبب faq_contrib بلا سقف يومي أصلاً. المرجع الآن بصمة المحتوى
+ * (sha256 للعنوان والمحتوى بعد تطبيع المسافات والأحرف)؛ والفهرس الفريد
+ * idx_points_unique_ref على (user_id, reason_key, ref_type, ref_id) يعني
+ * أن المحتوى نفسه لا يُكافأ من المؤلف نفسه مرتين ولو تغيّر معرّف المدخل.
+ * تعديل مقال حيّ لا يستدعي المنح أصلاً، ومكافأة إعادة صياغة مقال قديم
+ * تبقى حكم الإدارة لا لعدّاد النقاط. أما التدفق الحر عبر مقالات مختلفة
+ * فيقيّده سقف faq_contrib اليومي في points (مساهمتان بقيمة 5).
  */
 function awardEntryCredits(entry, userId) {
   if (!entry?.id) return { ok: false };
@@ -340,13 +346,21 @@ function awardEntryCredits(entry, userId) {
       reasonKey: 'faq_contrib',
       reason: `إثراء قاعدة المعرفة (#${entry.id})`,
       refType: 'faq',
-      refId: String(entry.id),
+      refId: entryContentHash(entry),
       addedBy: userId,
     });
   } catch (e) {
     require('./logger').log('faq').warn(`نقاط مساهمة FAQ فشلت للمدخل #${entry.id}: ${e.message}`);
     return { ok: false };
   }
+}
+
+/** بصمة المحتوى: تطبيع خفيف (أحرف صغيرة، مسافة واحدة) ثم sha256 — ثابتة عبر إعادة الإضافة. */
+function entryContentHash(entry) {
+  const signature = [entry.title, entry.content]
+    .map(part => String(part || '').toLowerCase().replace(/\s+/g, ' ').trim())
+    .join('\u0001');
+  return crypto.createHash('sha256').update(signature, 'utf8').digest('hex');
 }
 
 module.exports = {
@@ -592,9 +606,19 @@ module.exports = {
       try {
         const entry = faq.add({ categoryId: cat.id, title: forms.value(i, 'title'), content: forms.value(i, 'content'), important, userId: i.user.id });
         audit.record({ action: 'faq_entry_created', actorId: i.user.id, targetId: String(entry.id), details: { title: entry.title, categoryId: entry.category_id, important }, channelId: i.channelId });
-        // نقاط المساهمة: بعد إنشاء الصف نجاحاً وبإحالته مرجعاً فريداً (موجة نقاط)
+        // نقاط المساهمة: بعد إنشاء الصف نجاحاً — والمرجع بصمة المحتوى (تقرير التدقيق).
+        // الرد صادق في حالة اللا-منح: يشرح سبباً ما بسبب رسائل المكرر والسقف.
         const credits = awardEntryCredits(entry, i.user.id);
-        await replyEphemeral(i, `✅ تمت إضافة المدخل **#${entry.id}** — ${cat.name}${important ? ' (📌 يتطلب تأكيد قراءة)' : ''}${credits.ok ? ' • +5 نقاط مساهمة 🎉' : ''}.`, COLORS.success);
+        const creditNote = credits.ok
+          ? ' • +5 نقاط مساهمة 🎉'
+          : credits.reason === 'مكرَّر'
+            ? ' • لا نقاط: هذا المحتوى كافَأته منك سابقاً — المحتوى نفسه لا يُكافأ مرتين حتى لو حُذفت نسخته القديمة.'
+            : credits.reason === 'سقف يومي'
+              ? ' • لا نقاط الآن: بلغت سقف المساهمات المدفوعة اليومي (مساهمتان) — أضف غداً وسُتكافأ عنه.'
+              : credits.reason === 'مجمَّد'
+                ? ' • لا نقاط: نقاطك مجمّدة حالياً.'
+                : '';
+        await replyEphemeral(i, `✅ تمت إضافة المدخل **#${entry.id}** — ${cat.name}${important ? ' (📌 يتطلب تأكيد قراءة)' : ''}${creditNote}.`, COLORS.success);
         return notifyUpdate(i.client, 'create', entry, i.user.id);
       } catch (e) { return replyEphemeral(i, `❌ تعذّرت الإضافة: ${e.message}`, COLORS.danger); }
     },
