@@ -5,6 +5,8 @@ const staffService = require('./services/staff');
 const reports = require('./services/reports');
 const load = require('./services/load');
 const points = require('./services/points');
+const promoService = require('./services/promotions');
+const { POINTS_TRANSITION_DAYS } = promoService;
 const { ABSENCE, LEAVE_GLOBAL, LEAVE_TYPES } = require('./constants');
 const settings = require('./services/settings');
 const leaveService = require('./services/leaves');
@@ -927,6 +929,65 @@ async function freezeCleanup(client) {
   }
 }
 
+// ===== ترويض طلبات الترقية المعلّقة (موجة نقاط 2026-10-24) =====
+
+// المهلتان كنّصّين عمداً: القيمة تُستوفى في SQL (datetime('now', '-N days'))
+// فتبقى مصدر حقيقة واحداً، وحارس المخطط يقدر على حل الاستيفاء لأنه نص حرفي.
+const PROMO_PENDING_MAX_DAYS = '30';
+const PROMO_REMINDER_DAYS = '7';
+
+/**
+ * أعمار طلبات الترقية: أقدم من المهلة يُسقط آلياً، وأقدم من التذكير يُنقّر.
+ *
+ * الرفض الآلي بعد 30 يوماً ليس حكماً على الأداء — إنه تنظيف معلّقٍ بلا راعٍ:
+ * سببه مكتوب، والعضو يُخبر بذلك وبحقّه في إعادة التقديم فوراً. والتذكير
+ * (7+) لقناة الإدارة كلها: الطلب قد يعلق صمتاً أسابيع لأنه بلا من ينادي.
+ */
+async function processPromotionPending(client) {
+  const db = getDb();
+  const expired = db.prepare(`SELECT id, user_id, from_rank, to_rank FROM promotion_requests
+    WHERE status = 'pending' AND created_at <= datetime('now', '-${PROMO_PENDING_MAX_DAYS} days')`).all();
+  for (const r of expired) {
+    const reason = `انقضت مهلة القرار (${PROMO_PENDING_MAX_DAYS} يوماً بلا موافقة) — رفض آلي بلا محاكمة، يحق لك إعادة التقديم`;
+    promoService.review(r.id, 'rejected', 'system', reason);
+    audit.record({ action: 'promotion_request_expired', actorId: 'system', targetId: r.user_id, details: { requestId: r.id, fromRank: r.from_rank, toRank: r.to_rank } });
+    await dm(client, r.user_id, { embeds: [embed('⏱️ أُغلق طلب الترقية آلياً', `طلبك **#${r.id}** (${r.from_rank} → ${r.to_rank}) لم يُقرَّر خلال **${PROMO_PENDING_MAX_DAYS} يوماً** فأُغلق آلياً.\nيمكنك تقديم طلب جديد متى اكتملت شروطك بالأمر \`/request-promotion\`.`, COLORS.warning)] });
+    logger.info(`⏱️ طلب ترقية #${r.id} أُسقط آلياً بعد انتهاء المهلة.`);
+  }
+  const waiting = db.prepare(`SELECT id, user_id, to_rank FROM promotion_requests
+    WHERE status = 'pending' AND created_at <= datetime('now', '-${PROMO_REMINDER_DAYS} days')`).all();
+  if (waiting.length) {
+    const lines = [`⏳ **${waiting.length}** طلب ترقية بانتظار القرار منذ ${PROMO_REMINDER_DAYS} يوماً فأكثر:`,
+      ...waiting.slice(0, 10).map(r => `• #${r.id} <@${r.user_id}> → ${r.to_rank}`)];
+    await sendToChannel(client, 'manager-review', { embeds: [embed('⏳ تذكير بطلبات ترقية معلّقة', lines.join('\n'), COLORS.warning)] });
+    logger.info(`⏳ تذكير طلبات الترقية: ${waiting.length} طلب معلق.`);
+  }
+}
+
+/**
+ * حالة نافذة العتبات الانتقالية (D7) — نقية للاختبار.
+ * @returns {{started: boolean, day: number|null}}
+ */
+function pointsEpochState(today = clock.today()) {
+  const started = settings.policy('points_epoch_started_at', null);
+  if (started == null) return { started: false, day: null };
+  return { started: true, day: Math.max(0, clock.daysBetween(String(started), String(today))) };
+}
+
+/**
+ * راية اكتمال النافذة الانتقالية: في يوم الستين بالضبط تُعلن في staff-alerts
+ * أن العتبات عادت كاملة. الانعكاس التلقائي هادئ بلا مهمة مجدولة، والعضو الذي
+ * كان يرى «عتبة انتقالية» في بطاقة ترقية قد يسأل لماذا ارتفعت فجأة.
+ */
+async function pointsEpochFlag(client) {
+  const st = pointsEpochState();
+  if (!st.started || st.day !== POINTS_TRANSITION_DAYS) return;
+  await sendToChannel(client, 'staff-alerts', { embeds: [embed('🏁 اكتملت النافذة الانتقالية للنقاط',
+    `اليوم **${clock.today()}** يكتمل **${POINTS_TRANSITION_DAYS} يوماً** على انطلاقة نظام النقاط.\nالعتبات هي الآن **كاملة** بقيمها النهائية (200/500/900/… حسب الرتبة) — ما كنت تعرضه من عتبات مخفّضة ارتدّ تلقائياً.`,
+    COLORS.info)] });
+  logger.info('🏁 النافذة الانتقالية للنقاط اكتملت — العتبات كاملة من التاريخ.');
+}
+
 /**
  * حارس لكل مهمة: يمنع تشغيل نسختين متزامنتين (مهمة غياب طويلة قد تتجاوز 30
  * دقيقة فتتراكب)، ويحفظ آخر تشغيل في جدول job_runs ليظهر في /status.
@@ -1060,6 +1121,7 @@ function bootstrap(client) {
     ['leaves', () => processLeaves(client)],
     ['resignations', () => processResignations(client)],
     ['task-reminders', () => processTaskReminders(client)],
+    ['promotion-pending', () => processPromotionPending(client)],
   ];
   return Promise.all(jobs.map(([name, fn]) => guarded(name, fn)()));
 }
@@ -1088,6 +1150,9 @@ function start(client) {
     ['monthly-best', '0 10 1 * *', () => monthlyBest(client)],
     ['absence-penalty', '0 1 * * *', () => absencePenalty(client)],
     ['freeze-cleanup', '0 2 * * *', () => freezeCleanup(client)],
+    // ===== ترويض طلبات الترقية + راية اكتمال النافذة الانتقالية (موجة نقاط) =====
+    ['promotion-pending', '40 9 * * *', () => processPromotionPending(client)],
+    ['points-epoch-flag', '50 8 * * *', () => pointsEpochFlag(client)],
   ];
   JOBS.length = 0;
   // toggle معلن حتى يعرف /status أن المهمة مربوطة بمفتاح تبديل (أو غير مربوطة).
@@ -1120,6 +1185,8 @@ module.exports = {
   processResignations, processTaskReminders, dailyReport, weeklyReport, weeklyReportData, monthlyReport,
   // نقاط الصيانة
   dailyPresence, weeklyStar, monthlyBest, absencePenalty, freezeCleanup,
+  // ترويض طلبات الترقية + راية النافذة الانتقالية (موجة نقاط)
+  processPromotionPending, pointsEpochFlag, pointsEpochState, PROMO_PENDING_MAX_DAYS, PROMO_REMINDER_DAYS,
   JOBS, JOB_TOGGLES, jobEnabled, clearRunningTasks,
   TASK_REMINDER_MAX_ATTEMPTS, reminderGiveUps, SCHEMA_FAULT_JOB,
 };
