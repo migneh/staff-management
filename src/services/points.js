@@ -56,6 +56,10 @@ const POINTS_DEFAULTS = {
  */
 const DAILY_CAPS_DEFAULTS = {
   chat_help: 5,
+  // تغطية الشفت مصدر ذاتي الاعتماد (العضو يُعلن تغطيته بنفسه) — السقف منع
+  // فرصة رعيها لا تحديد جهده. ملاحظة الحساب: العدّاد يجمع النقاط لا الطلبات،
+  // فالسقف 6 = تغطيتان بالقيمة 3 لكل تغطية.
+  shift_cover: 6,
 };
 
 // Manual ticket logging is self-service; these fixed limits cannot be raised
@@ -119,6 +123,28 @@ function awardedToday(userId, reasonKey) {
   const row = getDb().prepare(`SELECT COALESCE(SUM(points), 0) total FROM promotion_points
     WHERE user_id = ? AND reason_key = ? AND created_at >= ? AND created_at < ?`)
     .get(userId, reasonKey, start, endExclusive);
+  return Number(row.total) || 0;
+}
+
+/**
+ * وتيرة العضو الأخيرة: مجموع نقاطه خلال N يوماً داخل عصره الحالي.
+ *
+ * فتّرة التقدم في بطاقة /my-points تُقاس من الدفتر لا من الذاكرة: كل الجلوس
+ * (منح/خصم/مكافآت) يشارك لأن وتيرة العضو هي صافي ما يجمعه فعلاً. النافذة
+ * عبر clock.dayWindow (حُدّان صريحان بصيغ UTC) لا مقارنة نصية على day،
+ * والعصر يُقرأ من staff_members لا يُمرَّر — نفس قاعدة getBalance: source
+ * واحد لمعنى «الرصيد الحالي».
+ */
+function sumInWindow(userId, days = 28) {
+  const epochRow = getDb().prepare(`SELECT rank_epoch FROM staff_members WHERE user_id = ?`).get(userId);
+  if (!epochRow) return 0;
+  const span = Math.min(Math.max(Math.trunc(Number(days)) || 28, 1), 365);
+  const today = clock.today();
+  const w = clock.dayWindow(clock.addDays(today, -(span - 1)), today);
+  if (!w) return 0;
+  const row = getDb().prepare(`SELECT COALESCE(SUM(points), 0) total FROM promotion_points
+    WHERE user_id = ? AND rank_epoch = ? AND created_at >= ? AND created_at < ?`)
+    .get(userId, epochRow.rank_epoch ?? 0, w.start, w.endExclusive);
   return Number(row.total) || 0;
 }
 
@@ -259,5 +285,5 @@ function leaderboard({ team = null, limit = 20 } = {}) {
 
 module.exports = {
   POINTS_DEFAULTS, DAILY_CAPS_DEFAULTS,
-  pointsFor, dailyCapFor, getBalance, isFrozen, add, history, freeze, unfreeze, leaderboard, awardedToday,
+  pointsFor, dailyCapFor, getBalance, isFrozen, add, history, freeze, unfreeze, leaderboard, awardedToday, sumInWindow,
 };

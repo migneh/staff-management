@@ -24,6 +24,8 @@ const modules = [
   require('./activity'),
   require('./my-status'),
   require('./my-points'),
+  require('./cover-shift'),  // نقاط تغطية الشفت (موجة نقاط 2026-10-24)
+  require('./points-admin'), // منح موثّق بقيمة ثابتة (واجهة D4)
   require('./promotion-progress'),
   require('./config'),
   require('./staff-logs'),  // New: Staff logs system
