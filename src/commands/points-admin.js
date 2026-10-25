@@ -49,6 +49,11 @@ module.exports = {
 
         const member = staffService.get(targetUser.id);
         if (!member) return replyEphemeral(i, '❌ هذا المستخدم ليس في سجل الإداريين.', COLORS.danger);
+        // منع المنح الذاتي (قرار المالك): مُنحِي بنفسه المستفيد يفقد
+        // حياد المنح، فتُرفض المحاولة دائماً حتى على أعلى مستوى إداري.
+        if (targetUser.id === i.user.id) {
+          return replyEphemeral(i, '❌ لا منح ذاتي — منح النقاط اليدوية يحتاج مُنحِياً غير المستفيد. إن رأيت جهدك يستحق المكافأة فاطلب من إدارة أعلى منحها لك.', COLORS.danger);
+        }
 
         const rule = MANUAL_REASONS.find(r => r.value === reasonKey);
         const note = (i.options.getString('note') || '').trim();

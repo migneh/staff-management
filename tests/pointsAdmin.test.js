@@ -85,3 +85,17 @@ test('المجمَّد تُعطَّل المنحة بسببه الصريح ول�
   assert.match(textOf(bag), /مجمّدة/);
   assert.equal(points.getBalance(TARGET), 0);
 });
+
+test('لا منح ذاتي: المانح نفسه المستفيد يُرفض ولا يُكتب بالدفتر (قرار المالك)', async () => {
+  seedStaff(M); // المانح هو المستهدف — المستوى الأعلى لا يفتح ثغرة الفائدة
+  const bag = interaction(M, 'bug-self-gift-001');
+  await cmd.execute(bag);
+  assert.match(textOf(bag), /لا منح ذاتي/, 'الرفض بسببه الصريح ولا يُتلمَع');
+  const row = getDb().prepare(`SELECT 1 x FROM promotion_points WHERE user_id = ? AND ref_id = ?`).get(M, 'bug-self-gift-001');
+  assert.ok(!row, 'الأثر لم يُكتب بالدفتر — المحاولة انتهت رفضاً فقط');
+  // والانعكاس يستمر: غير ذاتي يعمل على نفس المستوى — القرار استثنائي لا تمييز مستويات
+  seedStaff(TARGET);
+  const ok = interaction(TARGET, 'bug-self-gift-002');
+  await cmd.execute(ok);
+  assert.match(textOf(ok), /مُنح/);
+});
