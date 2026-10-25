@@ -17,6 +17,8 @@ const { COLORS, replyEphemeral, arDigits } = require('../utils');
  *    وتغطيتاه لزميلَين مختلفين في نفس اليوم مرجعَان مختلفان فيُقبلان.
  *  • سقف يومي 6 نقطة (DAILY_CAPS_DEFAULTS.shift_cover) = تغطيتان بقيمة 3:
  *    العدّاد نقاط لا طلَبات، فتكوين السقف بالقيمة يجعل «تغطيتين» حرفياً.
+ *  • بوابة المُغطِّي (قرار المالك): نفس شرط المغطى عليه — من على إجازة
+ *    أو موقوف ليس في صفة عمله، فلا تغطية له ولا نقاط.
  *
  * النقاط للقائم بالتغطية (المتفاعل) لا للمغطى عليه؛ وقيمة السبب ومرجعه ثابتة
  * في الدفتر لا في هذه الواجهة — الواجهة صرفاً طاولة تسجيل.
@@ -43,6 +45,11 @@ module.exports = {
         if (coveredUser.id === covererId) return replyEphemeral(i, '❌ لا تغطية لنفسك — التغطية تعني انشغال زميل.', COLORS.danger);
         const coverer = staffService.get(covererId);
         if (!coverer) return replyEphemeral(i, 'لست مسجلاً في سجل الإداريين — لا نقاط تُمنح لغير أهل الدفتر.', COLORS.warning);
+        // بوابة المُغطِّي (قرار المالك ضمن إحاطة ⑨): نفس قاعدة المغطى عليه —
+        // من على إجازة أو موقوف ليس في صفة عمل اليوم، فتغطيته لا تُحتسب.
+        if (!coverable(coverer)) {
+          return replyEphemeral(i, '❌ التغطية تُسجَّل لمن هو في صفة عمله اليوم — وضعك الحالي (إجازة أو إيقاف) لا يجعلك مؤهلاً لنقاط تغطية.', COLORS.danger);
+        }
         const covered = staffService.get(coveredUser.id);
         if (!coverable(covered)) {
           return replyEphemeral(i, '❌ العضو المذكور غير مسجل بصفة نشطة — تغطية شفت مجندة أو موقوفة لا تُمنح نقاطاً.', COLORS.danger);

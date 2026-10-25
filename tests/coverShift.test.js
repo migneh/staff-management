@@ -47,6 +47,32 @@ test('المغطى عليه غير نشط في الدفتر = رفض صريح ل
   assert.equal(points.getBalance(COV), 0);
 });
 
+// بوابة المُغطِّي (قرار المالك ضمن إحاطة ⑨): قاعدة المغطى عليه نفسها
+// تنطبق على القائم بالتغطية — لا +3 لمن ليس في صفة عمله اليوم.
+
+function noCoverRow() {
+  const row = getDb().prepare(`SELECT 1 x FROM promotion_points WHERE user_id = ? AND reason_key = 'shift_cover'`).get(COV);
+  return !row;
+}
+
+test('مُغطِّي على إجازة يُرفض قبل النقاط وبلا أثر في الدفتر', async () => {
+  seedStaff(COV, 'on_leave');
+  seedStaff('666111222333444555');
+  const bag = interaction('666111222333444555');
+  await cmd.execute(bag);
+  assert.match(textOf(bag), /صفة عمله اليوم/, 'الرفض يشرح القاعدة لا يلتف عليها');
+  assert.ok(noCoverRow(), 'لا صف تغطية في الدفتر — الإجازة لا تُجمع فوقها نقاط معلقة');
+});
+
+test('مُغطِّي موقوف يُرفض أيضاً بالبوابة الواحدة', async () => {
+  seedStaff(COV, 'suspended');
+  seedStaff('666111222333444555');
+  const bag = interaction('666111222333444555');
+  await cmd.execute(bag);
+  assert.match(textOf(bag), /صفة عمله اليوم/);
+  assert.ok(noCoverRow());
+});
+
 test('تغطية النفس رفض فوري — التغطية تعني انشغال زميل', async () => {
   seedStaff(COV);
   const bag = interaction(COV);
