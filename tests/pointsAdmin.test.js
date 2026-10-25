@@ -53,10 +53,11 @@ test('منح موثّق يمنح +5 بمرجع الحالة ويحدّث الر�
   assert.match(textOf(bag), /bug-2026-014/, 'المرجع يظهر في الرد ليُقارن به السجل');
   assert.equal(points.getBalance(TARGET), 5, 'قيمة bug_found ثابتة 5');
   // الأثر في الدفتر بمرجع فريد قياساً مستقبلاً
-  const row = getDb().prepare(`SELECT ref_type, ref_id, added_by FROM promotion_points WHERE user_id = ?`).get(TARGET);
+  const row = getDb().prepare(`SELECT ref_type, ref_id, added_by, reason FROM promotion_points WHERE user_id = ?`).get(TARGET);
   assert.equal(row.ref_type, 'bug');
   assert.equal(row.ref_id, 'bug-2026-014');
   assert.equal(row.added_by, M);
+  assert.equal(row.reason, 'اكتشاف ثغرة (مرجع bug-2026-014) — ثغرة صلاحيات في لوحة التدقيق', 'نصّ الدفتر بهوية القاعدة الحية');
 });
 
 test('نفس المرجع لا يُكرّر المنح — الثغرة الواحدة مكافأة واحدة', async () => {
@@ -98,4 +99,25 @@ test('لا منح ذاتي: المانح نفسه المستفيد يُرفض و
   const ok = interaction(TARGET, 'bug-self-gift-002');
   await cmd.execute(ok);
   assert.match(textOf(ok), /مُنح/);
+});
+
+// ===== نصّ دفتر المنحة من القاعدة ذاتها (البند ⑪) =====
+// النص مشتق من هويتها في القاعدة لا مصمتاً في المسار: أي سبب ينضم لاحقاً
+// يكتب دفتره بهويته هو، ولا تظهر كل منحةٍ قادمة كأنها أول ثغرة اكتُشفت.
+
+const { ledgerReason } = require('../src/commands/points-admin');
+
+test('نصّ الدفتر يولّد من القاعدة الحية: bug_found بهويته مع الملاحظة ودونها', () => {
+  assert.equal(ledgerReason('bug_found', 'bug-1', 'وصف قصير'), 'اكتشاف ثغرة (مرجع bug-1) — وصف قصير');
+  assert.equal(ledgerReason('bug_found', 'bug-1'), 'اكتشاف ثغرة (مرجع bug-1)');
+});
+
+test('سبب مستقبلي يكتب دفتره بهويته — لا يستعار لقب السبب الأول', () => {
+  // جدول مُجتاز صراحة كتثبيت أن النسبة تُشرَب من هوية القاعدة لا من ثابت المسار
+  const table = [{ value: 'loyal', cause: 'جدارة موثقة' }];
+  assert.equal(ledgerReason('loyal', 'loyal-2026-01', 'شهادة موثقة', table), 'جدارة موثقة (مرجع loyal-2026-01) — شهادة موثقة', 'التوليد من جدول القاعدة الواردة لا من ثابت المسار');
+});
+
+test('المفتاح الغائب عن الجدول يهويّ بنفسه — لا لقبٌ غريب يُستعار', () => {
+  assert.equal(ledgerReason('unknown_key', 'r-1', null), 'unknown_key (مرجع r-1)');
 });

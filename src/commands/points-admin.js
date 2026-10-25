@@ -21,8 +21,20 @@ const { COLORS, replyEphemeral, arDigits } = require('../utils');
  * متسلسل يمنحها مرجعاً نظيفاً)، فالإدارة تمنحها بمرجع المُشاهدة الدقيقة.
  */
 const MANUAL_REASONS = [
-  { value: 'bug_found', label: 'اكتشاف ثغرة (+5)' },
+  { value: 'bug_found', label: 'اكتشاف ثغرة (+5)', cause: 'اكتشاف ثغرة' },
 ];
+
+/**
+ * نصّ دفتر المنحة من القاعدة ذاتها (البند ⑪): (السبب) (مرجع فريد) (+الملاحظة).
+ * كل سبب ينضم لاحقاً يكتب دفتره بهويته هو (cause)، ولا تتسلل صياغة السبب
+ * الأول إلى دفاتر قادمة. وإن غاب عن القائمة فالمفتاح هو هويته — لا لقب
+ * سببٍ غرب.
+ */
+function ledgerReason(reasonKey, ref, note, table = MANUAL_REASONS) {
+  const rule = table.find(r => r.value === reasonKey);
+  const cause = rule?.cause || reasonKey;
+  return note ? `${cause} (مرجع ${ref}) — ${note}` : `${cause} (مرجع ${ref})`;
+}
 
 const ID_RE = /^\d{15,22}$/;
 
@@ -60,7 +72,7 @@ module.exports = {
         const r = points.add({
           userId: targetUser.id,
           reasonKey,
-          reason: note ? `اكتشاف ثغرة (مرجع ${ref}) — ${note}` : `اكتشاف ثغرة (مرجع ${ref})`,
+          reason: ledgerReason(reasonKey, ref, note),
           refType: 'bug',
           refId: ref,
           addedBy: i.user.id,
@@ -82,4 +94,5 @@ module.exports = {
       },
     },
   ],
+  ledgerReason,
 };
