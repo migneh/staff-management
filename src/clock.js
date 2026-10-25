@@ -55,15 +55,26 @@ function addDays(dateStr, days) {
 }
 
 /**
- * حدّ يوم واحد كطابع زمني UTC قابل للمقارنة النصية مع عمود مخزَّن
- * ('YYYY-MM-DD 00:00:00'). أعمدة created_at/closed_at/rated_at تُخزَّن
- * بـ datetime('now') وبـ toISOString().slice(0,19) — أي 19 محرفاً دائماً،
- * فالمقارنة النصية المعجمية عليها صحيحة وترتيبية.
- * @param {string} day YYYY-MM-DD
+ * حدّ يوم واحد كطابع زمني UTC قابل للمقارنة النصية مع عمود مخزَّن.
+ * أعمدة created_at/closed_at/rated_at تُخزَّن بـ datetime('now') وبـ
+ * toISOString().slice(0,19) — أي 19 محرفاً دائماً، فالمقارنة النصية
+ * المعجمية عليها صحيحة وترتيبية، ويقلمها فهرس B-tree بلا date().
+ *
+ * الحدّ هنا **يوم الرياض لا يوم UTC**: `day` تاريخ بتوقيت TZ (من today()
+ * وأخواتها)، فمنتصف ليل يوم الرياض D في UTC هو 21:00 اليوم السابق.
+ * قبله كانت تعيد `${day} 00:00:00` فتساوي حدود نافذة دقيقة الرياضية
+ * بحدود يوم UTC نفسه — فمن منحَ في الرياض 00:00–03:00 كان يسقط من سقف
+ * اليوم إلى دفتر الأمس (علة 2026-10-25، إصلاح بإذن المالك: الحدّ الأدنى).
+ *
+ * @param {string} day YYYY-MM-DD بتوقيت TZ
  * @returns {string|null} الطابع أو null إن لم يكن يوماً صالحاً
  */
+const LOCAL_UTC_OFFSET_HOURS = 3; // Asia/Riyadh ثابتة: لا توقيت صيفي
+
 function dayStartStamp(day) {
-  return isValidDate(day) ? `${day} 00:00:00` : null;
+  if (!isValidDate(day)) return null;
+  const hh = String(24 - LOCAL_UTC_OFFSET_HOURS).padStart(2, '0'); // '21'
+  return `${addDays(day, -1)} ${hh}:00:00`;
 }
 
 /**

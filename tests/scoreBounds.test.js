@@ -41,17 +41,17 @@ describe('دفتر نقاط الترقية', () => {
 
   test('يفرض سقفاً يومياً وأسبوعياً ثابتاً على نقاط التكتات', () => {
     const db = getDb();
-    const currentDay = clock.dayWindow(clock.today(), clock.today());
-    const priorWeekDay = clock.dayWindow(clock.addDays(clock.today(), -3), clock.addDays(clock.today(), -3));
     const insertAward = db.prepare(`INSERT INTO promotion_points (user_id, points, reason_key, reason, ref_type, ref_id, rank_epoch, created_at)
       VALUES ('member-1', ?, 'ticket_close', 'ticket', 'ticket', ?, 0, ?)`);
-    insertAward.run(20, 'prior-day', `${currentDay.start.slice(0, 10)} 12:00:00`);
+    // «ظهيرة» الرياض = 09:00 UTC (UTC+3): البذرة داخل يوم الرياض الحقيقي
+    // لا داخل يوم UTC — والحدوس الرياضية هي عقود dayWindow (علة 2026-10-25).
+    insertAward.run(20, 'prior-day', `${clock.today()} 09:00:00`);
     const dailyDenied = points.add({ userId: 'member-1', reasonKey: 'ticket_close', refType: 'ticket', refId: 'today-ticket' });
     assert.equal(dailyDenied.ok, false);
     assert.equal(dailyDenied.reason, 'سقف يومي للتكتات');
 
     db.prepare(`DELETE FROM promotion_points WHERE ref_id = 'prior-day'`).run();
-    insertAward.run(60, 'prior-week', `${priorWeekDay.start.slice(0, 10)} 12:00:00`);
+    insertAward.run(60, 'prior-week', `${clock.addDays(clock.today(), -3)} 09:00:00`);
     const weeklyDenied = points.add({ userId: 'member-1', reasonKey: 'ticket_close', refType: 'ticket', refId: 'week-ticket' });
     assert.equal(weeklyDenied.ok, false);
     assert.equal(weeklyDenied.reason, 'سقف أسبوعي للتكتات');

@@ -30,8 +30,9 @@ const OTHER = '222222222222222222';
 // ============================================================ clock helpers
 
 describe('clock.dayStartStamp / clock.dayWindow', () => {
-  test('dayStartStamp يبني طابع UTC بطول 19 محرفاً كما يخزّنه datetime(\'now\')', () => {
-    assert.equal(clock.dayStartStamp('2026-09-02'), '2026-09-02 00:00:00');
+  test('dayStartStamp يبني طابع UTC بطول 19 محرفاً كما يخزّنه datetime(\'now\') — بحدود يوم الرياض', () => {
+    // منتصف ليل يوم الرياض 2026-09-02 = 21:00 UTC ليوم 09-01 (UTC+3)
+    assert.equal(clock.dayStartStamp('2026-09-02'), '2026-09-01 21:00:00');
     // نفس الطول الذي تنتجه nowIso() — بدونه تفشل المقارنة النصية على الفهرس
     assert.equal(clock.dayStartStamp('2026-09-02').length, clock.nowIso().length);
   });
@@ -42,30 +43,44 @@ describe('clock.dayStartStamp / clock.dayWindow', () => {
     }
   });
 
-  test('dayWindow يجعل الحد الأعلى نصف مفتوح على منتصف ليل اليوم التالي', () => {
+  test('dayWindow يجعل الحد الأعلى نصف مفتوح على منتصف ليل اليوم التالي (بتوقيت الرياض)', () => {
     assert.deepEqual(clock.dayWindow('2026-09-02', '2026-10-01'), {
-      start: '2026-09-02 00:00:00',
-      endExclusive: '2026-10-02 00:00:00',
+      start: '2026-09-01 21:00:00',
+      endExclusive: '2026-10-01 21:00:00',
     });
   });
 
-  test('يوم واحد: الحد الأعلى = اليوم التالي', () => {
+  test('يوم واحد: الحد الأعلى = منتصف ليل اليوم التالي بالرياض', () => {
     assert.deepEqual(clock.dayWindow('2026-10-01', '2026-10-01'), {
-      start: '2026-10-01 00:00:00',
-      endExclusive: '2026-10-02 00:00:00',
+      start: '2026-09-30 21:00:00',
+      endExclusive: '2026-10-01 21:00:00',
     });
   });
 
   test('النافذة تعبر حدود الشهر والسنة والحُرم (تقفز 30 و31 و29 فبراير)', () => {
-    assert.equal(clock.dayWindow('2026-01-30', '2026-02-02').endExclusive, '2026-02-03 00:00:00');
-    assert.equal(clock.dayWindow('2024-02-28', '2024-03-01').endExclusive, '2024-03-02 00:00:00');
-    assert.equal(clock.dayWindow('2025-12-30', '2026-01-02').endExclusive, '2026-01-03 00:00:00');
+    assert.equal(clock.dayWindow('2026-01-30', '2026-02-02').endExclusive, '2026-02-02 21:00:00');
+    assert.equal(clock.dayWindow('2024-02-28', '2024-03-01').endExclusive, '2024-03-01 21:00:00');
+    assert.equal(clock.dayWindow('2025-12-30', '2026-01-02').endExclusive, '2026-01-02 21:00:00');
   });
 
   test('يرفض النافذة المقلوبة أو الفاسدة بدل إنتاج حدّ أعلى قبل الأوّلي', () => {
     assert.equal(clock.dayWindow('2026-10-01', '2026-09-02'), null);
     assert.equal(clock.dayWindow('2026-10-01', 'bad'), null);
     assert.equal(clock.dayWindow('bad', '2026-10-01'), null);
+  });
+
+  // ===== إثبات علة 2026-10-25 (قرار المالك: الحدّ الأدنى +3) =====
+  // الكناريان: منحٌ في الرياض 00:30 من يوم 26 يكتب طابعه UTC «25 21:30» —
+  // كان يسقط من سقف «اليوم» إلى دفتر الأمس لأن الحدوس كانت بيوم UTC.
+  test('طوابع الرياض حول منتصف الليل تُرصَّد في يومها الرياض لا في يوم UTC', () => {
+    const today = clock.dayWindow('2026-10-26', '2026-10-26');
+    assert.deepEqual(today, { start: '2026-10-25 21:00:00', endExclusive: '2026-10-26 21:00:00' });
+    const inside = ts => ts >= today.start && ts < today.endExclusive;
+    assert.equal(inside('2026-10-25 21:30:00'), true, 'الرياض 00:30 داخل يومها، لا في دفتر الأمس');
+    assert.equal(inside('2026-10-25 21:00:00'), true, 'أول ثانية من يوم الرياض مشمولة');
+    assert.equal(inside('2026-10-25 20:59:59'), false, '23:59:59 الأمس بالرياض خارجها');
+    assert.equal(inside('2026-10-26 20:59:59'), true, 'آخر ثانية من يوم 26 بالرياض مشمولة (23:59:59)');
+    assert.equal(inside('2026-10-26 21:00:00'), false, 'أول ثانية من يوم 27 بالرياض خارجها');
   });
 });
 
@@ -204,17 +219,28 @@ const START = '2026-09-02';
 const END = '2026-10-01';
 const WIN = clock.dayWindow(START, END);
 
-/** الطوابع الحدية التي يجب أن تتّفق فيها الصيغتان */
+/**
+ * الأرضية المرجعية المستقلة عن المنتج: حدود يوم الرياض صيغتَ نصّاً
+ * (قرار المالك 2026-10-25: الحدّ الأدنى +3). النافذة الصحيحة للرياض هي
+ * [اليوم-1 21:00 UTC، اليوم 21:00 UTC) — وهذه الحدود هي حُكم العلة.
+ */
+const RIYADH_START = `${clock.addDays(START, -1)} 21:00:00`;
+const RIYADH_END_EX = `${END} 21:00:00`;
+
+/** الطوابع الحدية التي تُحاك على حدود عدم المبالاة الواحد إحداها */
 const EDGES = [
-  ['2026-09-01 23:59:59', 'يوم قبل البداية'],
-  ['2026-09-02 00:00:00', 'بالضبط أول يوم — داخل'],
-  ['2026-09-02 00:00:01', 'ثانية بعد بداية أول يوم'],
+  ['2026-09-01 20:59:59', 'آخر ثانية بيوم 09-01 بالرياض — خارج'],
+  ['2026-09-01 21:00:00', 'أول ثانية بيوم 09-02 بالرياض — الفخّ الأدنى'],
+  ['2026-09-01 23:59:59', 'الرياض 02:59:59 من يوم 09-02 — داخل لتغيّر الحد'],
+  ['2026-09-02 00:00:00', 'الرياض 03:00 من يوم 09-02 — داخل بسرى الصيغة'],
+  ['2026-09-02 00:00:01', 'ثانية بعد بداية أول يوم (UTC)'],
   ['2026-09-02 12:00:00', 'منتصف أول يوم'],
   ['2026-09-15 03:14:07', 'منتصف النافذة'],
-  ['2026-10-01 00:00:00', 'أول لحظة في آخر يوم — داخل'],
+  ['2026-10-01 00:00:00', 'الرياض 03:00 من آخر يوم — داخل'],
   ['2026-10-01 12:00:00', 'منتصف آخر يوم'],
-  ['2026-10-01 23:59:59', 'آخر ثانية مشمولة — هذا هو الفخّ'],
-  ['2026-10-02 00:00:00', 'منتصف ليل اليوم التالي — خارج'],
+  ['2026-10-01 20:59:59', '23:59:59 آخر يوم بالرياض — آخر ثانية مشمولة'],
+  ['2026-10-01 21:00:00', 'أول ثانية بيوم 10-02 بالرياض — خارج'],
+  ['2026-10-02 00:00:00', 'منتصف ليل اليوم التالي (UTC) — خارج'],
   ['2026-10-02 00:00:01', 'خارج'],
   ['2026-10-15 10:00:00', 'خارج بوضوح'],
 ];
@@ -255,39 +281,48 @@ const PAIRS = [
   },
 ];
 
-describe('تكافؤ الحدود: الصيغة الجديدة = date() BETWEEN القديمة', () => {
+describe('تكافؤ الحدود: الصيغة الجديدة على حدود يوم الرياض — والحزمة المنزاحة موثّقة', () => {
+  // صيغة date() القديمة كانت تُرصِّد بيوم UTC، فانحرافها عن يوم الرياض ثابت
+  // في الحزام [21:00–24:00 UTC]. الشرط هنا: النافذة الجديدة تطابق حُكم
+  // الرياض في كل الحواف، وصيغة date() قارها فقط حيث لا بدّ أن يختلفا —
+  // هو علا العُلة لا عُطل الصيغة (قرار المالك).
+  const SHIFTED = new Set(['2026-09-01 21:00:00', '2026-09-01 23:59:59', '2026-10-01 21:00:00']);
+
+  /** الحُكم المستقل من صيغة الرياض نصّاً — لا من قيمة dayWindow المعادة */
+  const groundTruth = ts => (ts >= RIYADH_START && ts < RIYADH_END_EX ? 1 : 0);
+
   for (const pair of PAIRS) {
-    test(`${pair.name}: الطوابع الحدية الإحدى عشرة تتّفق صفاً بصف`, () => {
+    test(`${pair.name}: كل الحواف تطابق يوم الرياض، وdate() تُقارن حيث لا بدّ أن يختلفا`, () => {
       const table = [];
       for (const [ts, label] of EDGES) {
         openMemoryDb();
         pair.insert(ts);
-        const before = getDb().prepare(pair.old).get(UID_, START, END).c;
+        const oldCount = getDb().prepare(pair.old).get(UID_, START, END).c;
         const after = getDb().prepare(pair.now).get(UID_, WIN.start, WIN.endExclusive).c;
-        table.push({ ts, label, before, after, agree: before === after });
+        const truth = groundTruth(ts);
+        assert.equal(after, truth, `${pair.name} @ ${ts} (${label}): النافذة على حدود يوم الرياض`);
+        if (SHIFTED.has(ts)) {
+          assert.notEqual(oldCount, after,
+            `${pair.name} @ ${ts} (${label}): صيغة date() كانت تُرصِّد بيوم UTC — اختلافها هنا هو العلة`);
+        } else {
+          assert.equal(oldCount, after,
+            `${pair.name} @ ${ts} (${label}): خارج الحزام المنزاح فتتفق الصيغتان`);
+        }
+        table.push({ ts, label, oldCount, after });
       }
-      const mismatches = table.filter(r => !r.agree);
-      assert.deepEqual(mismatches, [], `off-by-one in ${pair.name}:\n${JSON.stringify(mismatches, null, 2)}`);
-      // الجدول نفسه مطلوب في التقرير: هذا هو إثبات التكافؤ
-      for (const r of table) {
-        const inWindow = r.ts >= `${START} 00:00:00` && r.ts < '2026-10-02 00:00:00' ? 1 : 0;
-        assert.equal(r.after, inWindow, `${pair.name} @ ${r.ts} (${r.label})`);
-      }
-      // تأكيد تسمية الصفحات حتى لا يمرّ الاختبار بلا assertion
-      assert.equal(table.find(r => r.ts === '2026-10-01 23:59:59').after, 1, '23:59:59 on the final day must be included');
-      assert.equal(table.find(r => r.ts === '2026-10-02 00:00:00').after, 0, 'midnight after the window must be excluded');
-      assert.equal(table.find(r => r.ts === '2026-09-02 00:00:00').after, 1, 'exact range start must be included');
+      // تأكيدات التقرير الثلاثة:
+      assert.equal(table.find(r => r.ts === '2026-09-01 21:00:00').after, 1, 'أول ثانية من أول يوم بالرياض مشمولة');
+      assert.equal(table.find(r => r.ts === '2026-10-01 20:59:59').after, 1, 'آخر ثانية (23:59:59) من آخر يوم بالرياض مشمولة');
+      assert.equal(table.find(r => r.ts === '2026-10-01 21:00:00').after, 0, 'أول ثانية من اليوم التالي بالرياض مستبعدة');
     });
   }
 
   test('صف واحد في الطابع الزمني الخام لا يسقط — الأعمدة TEXT بطول 19 محرفاً', () => {
-    for (const [ts] of EDGES) {
+    for (const [ts, label] of EDGES) {
       openMemoryDb();
       PAIRS[0].insert(ts);
       const n = getDb().prepare(PAIRS[0].now).get(UID_, WIN.start, WIN.endExclusive).c;
-      const old = getDb().prepare(PAIRS[0].old).get(UID_, START, END).c;
-      assert.equal(n, old, `raw-text comparison disagrees with date() at ${ts}`);
-      assert.equal(n, ts.startsWith(START) || (ts > `${START} 00:00:00` && ts < '2026-10-02 00:00:00') ? 1 : 0, ts);
+      assert.equal(n, groundTruth(ts), `raw-text disagrees at ${ts} (${label})`);
     }
   });
 
@@ -299,19 +334,21 @@ describe('تكافؤ الحدود: الصيغة الجديدة = date() BETWEEN 
     assert.equal(getDb().prepare(PAIRS[0].now).get(UID_, WIN.start, WIN.endExclusive).c, 1);
   });
 
-  test('كسر الحدّ بـ <= بدل < يُسقط صف 23:59:59 — الاختبار يكشفه', () => {
+  test('كسر الحدّ بـ <= بدل < يُسقط صف آخر ثانية اليوم بالرياض — الاختبار يكشفه', () => {
     // هذا هو إثبات أن اختبار التكافؤ ليس زينة: استبدل الحدّ الأعلى بـ <=
-    // وحدّاً أعلى «inclusive» مزيّفاً، وشاهد العدد ينهار.
+    // وحدّاً أعلى «inclusive» مزيّفاً، وشاهد آخر ثانية من آخر يوم بالرياض
+    // ('2026-10-01 20:59:59' UTC = 23:59:59 الرياض) تسقط.
     openMemoryDb();
-    PAIRS[0].insert('2026-10-01 23:59:59');
+    PAIRS[0].insert('2026-10-01 20:59:59');
     const correct = getDb().prepare(PAIRS[0].now).get(UID_, WIN.start, WIN.endExclusive).c;
-    // كسر مقصود: نستخدم نهاية اليوم الأخير نفسها كحدّ أعلى شامل — وهو بالضبط
-    // ما ينتجه "<= end" لو تُرك BETWEEN دون انتباه إلى نصف midnight المفتوح
+    // كسر مقصود: نستخدم منتصف ليل اليوم الأخير (UTC) كحدّ أعلى شامل —
+    // بالضبط ما ينتجه "<= end" لو تُرك BETWEEN دون انتباهٍ إلى نصف
+    // midnight المفتوح على حدود الرياض
     const broken = getDb().prepare(`SELECT COUNT(*) c FROM ticket_metrics
       WHERE claimer = ? AND closed_at >= ? AND closed_at <= ?`)
       .get(UID_, WIN.start, `${END} 00:00:00`).c;
-    assert.equal(correct, 1, 'الصيغة الصحيحة تشمل 23:59:59');
-    assert.equal(broken, 0, 'الصيغة المكسورة بـ <= تسقط صف 23:59:59');
+    assert.equal(correct, 1, 'الصيغة الصحيحة تشمل آخر ثانية من آخر يوم بالرياض');
+    assert.equal(broken, 0, 'الصيغة المكسورة بـ <= على منتصف ليل UTC يُسقط صف 20:59:59');
     assert.notEqual(correct, broken);
   });
 });
@@ -331,11 +368,11 @@ describe('monthlyRaw عبر النافذة الحقيقية', () => {
       (ticket_id, ticket_owner, claimer, closer, rating, duration, reopened, logged_by, closed_at)
       VALUES (?, 'o', ?, ?, 5, 30, ?, 'bot', ?)`).run(id, u, u, reopened, ts);
 
-    ticket('atStart', win.start, 0);                                   // داخل بالضبط
-    ticket('lastSecond', `${endDay} 23:59:59`, 1);                      // داخل — الفخّ
+    ticket('atStart', win.start, 0);                                   // داخل بالضبط (00:00 بالرياض)
+    ticket('lastSecond', `${endDay} 20:59:59`, 1);                     // داخل — الفخّ: 23:59:59 بالرياض
     ticket('mid', `${clock.addDays(startDay, 10)} 09:00:00`, 0);       // داخل
     ticket('before', `${clock.addDays(startDay, -1)} 09:00:00`, 0);    // خارج
-    ticket('after', win.endExclusive, 0);                               // خارج
+    ticket('after', win.endExclusive, 0);                               // خارج (أول ثانية بيوم التالي بالرياض)
 
     const raw = reports.getRaw(u, 30, 0);
     assert.equal(raw.tickets, 3, 'ثلاثة داخل النافذة، لا الأربعة الأخرى');
