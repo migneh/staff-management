@@ -5,6 +5,7 @@ const points = require('../services/points');
 const staffService = require('../services/staff');
 const audit = require('../services/audit');
 const { COLORS, replyEphemeral, arDigits } = require('../utils');
+const kit = require('../ui/kit');
 
 /**
  * /points-admin — المنح اليدوي الموثّق (2026-10-24).
@@ -80,7 +81,7 @@ module.exports = {
         if (!r.ok) {
           let text = `❌ لم تُمنح النقاط: ${r.reason}.`;
           if (r.reason === 'مكرَّر') text = `ℹ️ المرجع \`${ref}\` ممنوح من قبل — نفس الحالة لا تُكرّر المنح.`;
-          else if (r.reason === 'مجمَّد') text = `❄️ نقاط العضو مجمّدة حتى ${r.until} (السبب: ${r.freezeReason}) — لم يُمنح شيء.`;
+          else if (r.reason === 'مجمَّد') text = `❄️ نقاط العضو مجمّدة حتى ${kit.dateLine(r.until)} (السبب: ${r.freezeReason}) — لم يُمنح شيء.`;
           return replyEphemeral(i, text, COLORS.warning);
         }
         audit.record({

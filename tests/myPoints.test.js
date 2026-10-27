@@ -64,7 +64,11 @@ test('/my-points — التجميد الفاعل يعرض حتى متى وسبب
   });
   const json = card.toJSON();
   const toggleField = json.fields.find(f => f.name.includes('التجميد'));
-  assert.match(toggleField.value, /2030-01-01/);
+  // ⑭: العرض بترميز ديسكورد (kit.dateLine) لا التاج الخام UTC — التاريخ يُعرض
+  // محلياً عند القارئ والنسبة الزمنية تحكم السبب فوراً.
+  const epoch = Math.floor(Date.parse('2030-01-01T00:00:00Z') / 1000);
+  assert.match(toggleField.value, new RegExp(`<t:${epoch}:D>`));
+  assert.match(toggleField.value, new RegExp(`<t:${epoch}:R>`));
   assert.match(toggleField.value, /ثلاثة تقييمات سلبية/);
   assert.match(json.description, /العصر الحالي/, 'وصف البطاقة يعلن العصر كي يفهم الرصيد بمرجعه');
 });

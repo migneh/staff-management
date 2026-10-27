@@ -258,7 +258,7 @@ module.exports = {
       let extra = '';
       if (def.freezeDays) {
         const fr = points.freeze(draft.target, def.freezeDays, `${def.label} — ${reason}`);
-        extra = `\n🧊 تجميد النقاط حتى ${fr.until} (${def.freezeDays} يوماً)`;
+        extra = `\n🧊 تجميد النقاط حتى ${kit.dateLine(fr.until)} (${def.freezeDays} يوماً)`;
       }
       if (def.suspend) {
         // ⑬: كانت تكتب نصاً خاماً '60 days' — يعلق الموقوفاً للأبد لأن

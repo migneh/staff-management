@@ -6,6 +6,7 @@ const staffService = require('../services/staff');
 const audit = require('../services/audit');
 const clock = require('../clock');
 const { COLORS, replyEphemeral, arDigits } = require('../utils');
+const kit = require('../ui/kit');
 
 /**
  * /cover-shift — تسجيل تغطية شفت زميل (+3 shift_cover) — موجات نقاط 2026-10-24.
@@ -67,7 +68,7 @@ module.exports = {
           let text = `❌ لم تُمنح النقاط: ${r.reason}.`;
           if (r.reason === 'سقف يومي') text = `ℹ️ بلغت سقف التغطية اليومي (${arDigits(r.cap)} نقطة — تغطيتان) — حاول غداً.`;
           else if (r.reason === 'مكرَّر') text = 'ℹ️ تغطية نفس الزميل في هذا اليوم مسجّلة مسبقاً.';
-          else if (r.reason === 'مجمَّد') text = `❄️ نقاطك مجمّدة حتى ${r.until} (السبب: ${r.freezeReason}) — لم تُمنح نقاط التغطية.`;
+          else if (r.reason === 'مجمَّد') text = `❄️ نقاطك مجمّدة حتى ${kit.dateLine(r.until)} (السبب: ${r.freezeReason}) — لم تُمنح نقاط التغطية.`;
           return replyEphemeral(i, text, COLORS.warning);
         }
         audit.record({

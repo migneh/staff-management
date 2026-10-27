@@ -109,7 +109,7 @@ function record(userId, channel, content) {
  * النافذة على عمود `day` المفهرس مع `user_id` (idx_activity_user_day)، لا على
  * `created_at`. السبب في clock.dayWindow: `day` تاريخ مجرّد (YYYY-MM-DD) مخزَّن
  * بتوقيت السيرفر عبر clock.today، فمقارنته نصّيةً على فهرس B-tree حدٌّ صالح —
- * بخلاف `created_at >= datetime('now', ?)` الذي لا يستطيع أي فهرس أن يت alcance به
+ * بخلاف `created_at >= datetime('now', ?)` الذي لا يستطيع الفهرس أن يتقدّمه
  * معرّف المستخدم، فكان SQLite يقرأ **كل** الصفوف المحفوظة لذلك العضو ويدفعها
  * عبر شجرة B-tree مؤقتة للتجميع: 236 مللي ثانية و146 ألف صف ليعطي جواب 6 آلاف.
  *

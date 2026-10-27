@@ -44,7 +44,7 @@ function renderLedger({ member, rows, balance, freeze, progress }) {
   const fields = [
     { name: '💯 الرصيد (هذا العصر)', value: `**${arDigits(balance)}** نقطة`, inline: true },
     { name: '❄️ التجميد', value: frozen
-      ? `مجمَّد حتى ${freeze.until}\nالسبب: ${freeze.reason}`
+      ? `مجمَّد حتى ${kit.dateLine(freeze.until)}\nالسبب: ${freeze.reason}`
       : 'لا تجميد', inline: true },
   ];
   if (progress) {
