@@ -9,6 +9,7 @@ const {
 } = require('discord.js');
 
 const { arDigits: AR_DIGITS, COLORS, embed, truncate, clipRich } = require('../utils');
+const clock = require('../clock'); // «اليوم» الافتراضي للدوال أدناه بتوقيت الرياض لا UTC (⑫)
 
 /** `<t:1700000000:D>` — تاريخ محلي في جهاز القارئ */
 function tsDate(value, style = 'D') {
@@ -37,12 +38,12 @@ function toEpoch(value) {
   return Number.isNaN(t) ? null : Math.floor(t / 1000);
 }
 
-function startOfDay(dateStr = new Date().toISOString().slice(0, 10)) {
+function startOfDay(dateStr = clock.today()) {
   return /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? dateStr : String(dateStr).slice(0, 10);
 }
 
-/** عدد الأيام من اليوم إلى تاريخ (سالفة = قيمة سالبة) */
-function daysFromToday(dateStr, todayStr = new Date().toISOString().slice(0, 10)) {
+/** عدد الأيام من اليوم إلى تاريخ (سالفة = قيمة سالبة) — الافتراضي تاريخ الرياض عبر clock لا UTC (⑫) */
+function daysFromToday(dateStr, todayStr = clock.today()) {
   const a = Date.parse(`${startOfDay(todayStr)}T00:00:00Z`);
   const b = Date.parse(`${startOfDay(dateStr)}T00:00:00Z`);
   if (Number.isNaN(a) || Number.isNaN(b)) return null;

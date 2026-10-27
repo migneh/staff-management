@@ -84,7 +84,10 @@ function pruneActivity({ months = ACTIVITY_RETENTION_MONTHS, dryRun = false } = 
 /** تقليم سجل العمليات — أقدم من المدة المحددة */
 function pruneAudit({ months = AUDIT_RETENTION_MONTHS, dryRun = false } = {}) {
   const db = getDb();
-  const cutoff = `${cutoffMonth(months)}-01 00:00:00`;
+  // الحدّ = بداية الشهر القاطع بتوقيت الرياض لا UTC: أول ٣ ساعات
+  // الرياضية من الشهر القاطع كانت تُحسب قديمة وهي من شهرها نفسه —
+  // فالمسح الآن يُبقيها (قرار ⑫ — تحفُّظ لا فقد).
+  const cutoff = clock.dayStartStamp(`${cutoffMonth(months)}-01`);
   const { c } = db.prepare('SELECT COUNT(*) c FROM audit_logs WHERE created_at < ?').get(cutoff);
   if (dryRun || !c) return { deleted: 0, pending: c, cutoff };
   const res = db.prepare('DELETE FROM audit_logs WHERE created_at < ?').run(cutoff);
@@ -102,7 +105,9 @@ function pruneAudit({ months = AUDIT_RETENTION_MONTHS, dryRun = false } = {}) {
  */
 function pruneOperational({ dryRun = false, months = BACKUP_CHECK_RETENTION_MONTHS } = {}) {
   const db = getDb();
-  const cutoff = `${cutoffMonth(months)}-01 00:00:00`;
+  // الحدّ = بداية الشهر القاطع بتوقيت الرياض لا UTC — أثر ⑫ ذاته
+  // في pruneAudit: أول ٣ ساعات الرياضية من الشهر القاطع لا تُمحى.
+  const cutoff = clock.dayStartStamp(`${cutoffMonth(months)}-01`);
   const { c } = db.prepare('SELECT COUNT(*) c FROM backup_checks WHERE created_at < ?').get(cutoff);
   if (dryRun || !c) return { deleted: 0, pending: c, cutoff };
   const res = db.prepare('DELETE FROM backup_checks WHERE created_at < ?').run(cutoff);

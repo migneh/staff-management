@@ -11,7 +11,7 @@ const { ABSENCE, LEAVE_GLOBAL, LEAVE_TYPES } = require('./constants');
 const settings = require('./services/settings');
 const leaveService = require('./services/leaves');
 const audit = require('./services/audit');
-const { embed, COLORS, sendToChannel, dm, hoursSince, today, addDays, daysBetween } = require('./utils');
+const { embed, COLORS, sendToChannel, dm, hoursSince, today, addDays, daysBetween, stampLocalDay } = require('./utils');
 const reportCmds = require('./commands/reports');
 const backup = require('./services/backup');
 const kit = require('./ui/kit');
@@ -122,8 +122,9 @@ async function processLeaves(client) {
   const expireDays = Number(policy.pendingExpireDays || LEAVE_GLOBAL.pendingExpireDays || 10);
   const pendingRows = db.prepare(`SELECT * FROM leave_requests WHERE status='pending'`).all();
   for (const r of pendingRows) {
-    // إذا انتهت فترة الإجازة دون مراجعة، أو بقي معلقاً أكثر من expireDays
-    const created = (r.created_at || '').slice(0, 10);
+    // إذا انتهت فترة الإجازة دون مراجعة، أو بقي معلقاً أكثر من expireDays.
+    // العمر بأيام الرياض لا تاريخ UTC: طابع الفجر الرياضية يخلفه تاريخ UTC فيزيد العمر
+    const created = stampLocalDay(r.created_at);
     const age = created ? daysBetween(created, t) : 0;
     if (r.end_date < t || age >= expireDays) {
       db.prepare(`UPDATE leave_requests SET status='cancelled', cancelled_at=datetime('now'), cancel_reason='انتهت دون مراجعة', end_reason='auto' WHERE id=?`).run(r.id);
@@ -288,8 +289,9 @@ async function processResignations(client) {
       await sendToChannel(client, 'staff-alerts', { embeds: [embed('⚠️ استقالة تجاوزت آخر يوم', `الطلب السري **#${r.id}** لـ <@${r.user_id}> تجاوز آخر يوم **${kit.tsDate(r.last_day)}** دون قرار.`, COLORS.danger)] });
       await dm(client, r.user_id, { embeds: [embed('⚠️ متابعة الاستقالة', `انتهى التاريخ المحدد لطلب استقالتك **#${r.id}** وما زال القرار قيد المراجعة. تواصل مع الإدارة.`, COLORS.warning)] });
     }
-    // تصعيد: إذا بقي معلقاً أكثر من pendingEscalateDays
-    const created = (r.created_at || '').slice(0, 10);
+    // تصعيد: إذا بقي معلقاً أكثر من pendingEscalateDays.
+    // العمر بأيام الرياض لا تاريخ UTC — حساب processLeaves ذاته
+    const created = stampLocalDay(r.created_at);
     const age = created ? daysBetween(created, t) : 0;
     if (age >= (policy.pendingEscalateDays || 3) && !notified.has('escalated') && ['pending', 'on_hold'].includes(r.status)) {
       notified.add('escalated');
@@ -894,9 +896,10 @@ async function absencePenalty(client) {
     // النشاط (touchActivity قبل activity.record) وهو خارج نطاق تقليم
     // activity_logs (pruneActivity) — الجدول المقلَّم كان يذيب هويّة الفترة
     // بمرور أشهر فيغيّر إمضاء فترة قُضي فيها سلفاً فتُخصم مرة أخرى.
-    const anchor = String(m.last_activity || '').slice(0, 10)
-      || String(m.joined_at || '').slice(0, 10)
-      || String(m.rank_since || '').slice(0, 10)
+    // الإمضاء بتاريخ الرياض للنشاط — تقطيع UTC كان يزيحه ليلةً عند الفجر
+    const anchor = stampLocalDay(m.last_activity)
+      || stampLocalDay(m.joined_at)
+      || stampLocalDay(m.rank_since)
       || tenDaysAgo;
 
     // هل سبق تطبيق العقوبة لهذه الفترة؟ (refId = إمضاء الفترة لا تاريخ اليوم)

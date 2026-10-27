@@ -99,6 +99,29 @@ function dayWindow(startDay, endDay) {
   return { start, endExclusive };
 }
 
+/**
+ * يُنزح الطابع المخزَّن (UTC) إلى **تاريخه بتوقيت TZ** — عكس dayStartStamp.
+ *
+ * مواضع خارج dayWindow كانت تقرأ created_at/last_activity/human_ratings_at
+ * ثم تقطعها `.slice(0, 10)` — تاريخ UTC — وتقارن تواريخ `today()` التي هي
+ * تاريخ الرياض. في نافذة الرياض 00:00–03:00 (UTC 21:00–24:00) يخلف تاريخ
+ * UTC يوم الرياض فيزيد العمر أو القِدَم يومًا كاملًا — علة الساعة ذاتها
+ * المُصلَحة في dayStartStamp لكن خارج dayWindow.
+ *
+ * والتاريخ المجرَّد يعود كما هو: أعمدة joined_at/rank_since تحمل تواريخ
+ * خالصة لا طوابع، ونزحها فاصل زائف بثلاث ساعات.
+ *
+ * @param {string} value طابع 'YYYY-MM-DD HH:MM:SS' أو تاريخ مجرَّد
+ * @returns {string|null} YYYY-MM-DD بتوقيت TZ، أو null
+ */
+function stampLocalDay(value) {
+  const s = String(value || '').trim();
+  if (!s) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return isValidDate(s) ? s : null;
+  const d = parseStamp(s);
+  return d && !Number.isNaN(d.getTime()) ? dayOf(d) : null;
+}
+
 function daysBetween(a, b) {
   const da = parseStamp(a);
   const db = parseStamp(b);
@@ -142,5 +165,5 @@ function nextMonth(yyyymm) {
 
 module.exports = {
   TZ, dayOf, today, nowIso, parseStamp, isValidDate, addDays, dayStartStamp,
-  dayWindow, daysBetween, hoursSince, monthsSince, discordTs, previousMonth, nextMonth,
+  dayWindow, daysBetween, stampLocalDay, hoursSince, monthsSince, discordTs, previousMonth, nextMonth,
 };

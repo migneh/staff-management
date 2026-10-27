@@ -7,7 +7,7 @@ const { getDb } = require('../database');
 const staffService = require('../services/staff');
 const audit = require('../services/audit');
 const tasks = require('../services/tasks');
-const { embed, COLORS, replyEphemeral, sendToChannel, getChannel, isValidDate, daysBetween, today, dm, log } = require('../utils');
+const { embed, COLORS, replyEphemeral, sendToChannel, getChannel, isValidDate, daysBetween, today, dm, log, stampLocalDay } = require('../utils');
 const kit = require('../ui/kit');
 
 const STATUS_AR = { pending: '⏳ معلّق', accepted: '✅ مقبول', rejected: '❌ مرفوض', on_hold: '⏸️ معلّق لمقابلة', withdrawn: '↩️ مسحوب' };
@@ -21,7 +21,7 @@ function resignEmbed(r, color) {
       { name: 'الرتبة وقت الطلب', value: `${r.rank || '—'}`, inline: true },
       { name: 'الحالة', value: STATUS_AR[r.status] || r.status, inline: true },
       { name: 'آخر يوم', value: r.last_day ? `${kit.tsDate(r.last_day)} • ${kit.relativeDays(kit.daysFromToday(r.last_day))}` : '—', inline: true },
-      { name: 'فترة الإشعار', value: r.notice_days != null ? `**${r.notice_days}** ${kit.daysWord(r.notice_days)}` : `${daysBetween((r.created_at || '').slice(0, 10), r.last_day)} يوم`, inline: true },
+      { name: 'فترة الإشعار', value: r.notice_days != null ? `**${r.notice_days}** ${kit.daysWord(r.notice_days)}` : `${daysBetween(stampLocalDay(r.created_at), r.last_day)} يوم`, inline: true },
       { name: 'السبب المفصّل', value: r.reason || '—' },
     );
   if (r.notes) e.addFields({ name: 'ملاحظات إضافية', value: r.notes });

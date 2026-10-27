@@ -247,7 +247,9 @@ function evaluate(staff) {
         insufficient ? `${PROBATION.minTicketsForRating} تقييم على الأقل` : `${rule.rating}+`);
     }
     if (rule.requiresSupervisorRating) {
-      const age = staff.human_ratings_at ? Math.abs(clock.daysBetween(staff.human_ratings_at.slice(0, 10), today)) : null;
+      // قِدَم التقييم بأيام الرياض لا تاريخ UTC — تقطيع UTC القديم
+      // كان يزيده يومًا عند فجر الرياض (⑫)
+      const age = staff.human_ratings_at ? Math.abs(clock.daysBetween(clock.stampLocalDay(staff.human_ratings_at), today)) : null;
       const stale = age != null && age > RATING_VALID_DAYS;
       const rated = staff.supervisor_rating != null && !stale;
       const actual = staff.supervisor_rating == null ? 'لم يُقيَّم بعد'

@@ -92,7 +92,7 @@ const fail = (i, text) => replyEphemeral(i, `❌ ${text}`, COLORS.danger);
 const divider = '━━━━━━━━━━━━━━━━━━━━';
 
 // كل حسابات الوقت في مكان واحد — راجع src/clock.js لمعرفة قاعدة التوقيت.
-const { nowIso, today, addDays, isValidDate, daysBetween, monthsSince, hoursSince, discordTs } = clock;
+const { nowIso, today, addDays, isValidDate, daysBetween, monthsSince, hoursSince, discordTs, stampLocalDay } = clock;
 
 /** القصّ الوحيد في المشروع — trim في kit وclip كلتيهما تفوّضان إليه. */
 function truncate(s, n) { return clipRich(s, n); }
@@ -172,7 +172,7 @@ function progressBar(value, max, size = 10) {
 
 module.exports = {
   COLORS, embed, userEmbed, ok, fail, divider,
-  nowIso, today, addDays, isValidDate, daysBetween, monthsSince, hoursSince, discordTs,
+  nowIso, today, addDays, isValidDate, daysBetween, monthsSince, hoursSince, discordTs, stampLocalDay,
   arDigits, normalizeDigits, toInt, truncate, clipRich,
   getChannel, sendToChannel, log, dm, replyEphemeral, progressBar,
 };
