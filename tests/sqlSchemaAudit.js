@@ -38,7 +38,14 @@ const EXPECTED_SKIPS = new Map([
   // اسم جدول يأتي من sqlite_master وقت التشغيل: نفحص كل جدول في المخطط.
   ['src/services/retention.js', { count: 1, reason: /قائمة صلبة/ }],
   // `SET ${sets}` مبنية من Object.keys: نفحص كل عمود في staff_members.
-  ['src/services/staff.js', { count: 2, reason: /قائمة صلبة/ }],
+  // و⑬: ترحيل الإيقاف القديم يبني إزاحة الرياض من clock.LOCAL_UTC_OFFSET_HOURS
+  // (ثابت وحدة واحدة مصدَر من clock) — التحليل الساكن لا يستطيع تقييمه
+  // فتُتخطّى الجملة بسببه، والعدّ يمنع نمو التخطي الصامت في هذا الملف.
+  ['src/services/staff.js', { count: 3, reason: /قائمة صلبة|مبني بمتغير/ }],
+  // و⑬: أيام النشاط بحدّ الرياض — strftime تُبنى بإزاحة من
+  // clock.LOCAL_UTC_OFFSET_HOURS والتحليل الساكن لا يستطيع تقييم معرّف
+  // مستورد ساكناً في نص الوحدة، فالثقب موثّق هنا بسببه الحقيقي:
+  ['src/services/load.js', { count: 1, reason: /ثقب غير محلول: clock\.LOCAL_UTC_OFFSET_HOURS/ }],
   // فلتر اللوحة يبني IN (...) من ثابت مشترك INACTIVE_STATUSES (قرار المالك
   // D6): مصدر الحقيقة واحدة لا تتضاعف، والحارس لا يستطيع تقييم معرّف
   // مستورد ساكناً — فالثقب موثّق هنا بسببه الحقيقي، وحارس العدد يمنع نموه

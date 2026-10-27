@@ -2,6 +2,7 @@
 const { getDb } = require('../database');
 const { resolveStaff, TEAM_RANKS } = require('./permissions');
 const { nowIso, today } = require('../utils');
+const clock = require('../clock');
 const settings = require('./settings');
 const logger = require('../logger').log('staff');
 
@@ -64,7 +65,15 @@ function setStatus(userId, status) {
   getDb().prepare('UPDATE staff_members SET status = ?, updated_at = ? WHERE user_id = ?').run(status, nowIso(), userId);
 }
 
-/** إيقاف مؤقت بتاريخ انتهاء — يمنع بقاء العضو موقوفاً للأبد */
+/**
+ * إيقاف مؤقت بتاريخ انتهاء — يمنع بقاء العضو موقوفاً للأبد.
+ *
+ * عقد الحقل: يجب أن يكون تاريخ 'YYYY-MM-DD' رياضياً. القرّاء يقارنونه
+ * معجمياً مع today() وdatetime('now')، فليس ثمة مرور لنص خام مثل
+ * '60 days': ترتيب ASCII يجعل '6' > '2' فلا تاريخَ يتجاوزها — الموقوف
+ * يعلق للأبد ولا الرفع الآلي ولا عدّ الروستر يراه منتهياً. آخر يوم
+ * موقوف كامل هو سابق التاريخ، فالرفع يقع في فجر التاريخ نفسه.
+ */
 function suspend(userId, until) {
   getDb().prepare("UPDATE staff_members SET status = 'suspended', suspended_until = ?, updated_at = ? WHERE user_id = ?")
     .run(until || null, nowIso(), userId);
@@ -89,6 +98,31 @@ function liftExpiredSuspensions(date = today()) {
 
 function suspensionEnd(userId) {
   return getDb().prepare('SELECT suspended_until FROM staff_members WHERE user_id = ?').get(userId)?.suspended_until || null;
+}
+
+/**
+ * ترحيل صفوف الإيقاف القديمة التي كُتِبت فيها القيمة الخام '60 days'
+ * بلا تاريخ (قبل ⑬): مقارنة الرفع معجمية فلم يعد الرفع الآلي يجدها أبداً
+ * — '6' > '2' في الترتيب، فالمقارنة المعجمية تجعلها أعلى من كل تاريخ
+ * محتمل فتصمد بلا نهاية.
+ *
+ * الترحيل يبني التاريخ من updated_at (وقت الإيقاف: الاستدعاء نفسه
+ * الذي كتب فيه updated_at): يوم الرياض حينئذٍ + 60 يوماً.
+ * متوافق مع عقد `suspend()`: آخر يوم موقوف كامل هو اليوم 59، والرفع
+ * في فجر اليوم الستين.
+ *
+ * يُستدعى مرة عند الإقلاع — idempotent: بعد الإقلاع الأول يصادف
+ * الشرط صفراً فلا تغيير.
+ *
+ * @returns {number} عدد الصفوف المُرحَّلة
+ */
+function migrateLegacySuspensions() {
+  const res = getDb().prepare(
+    `UPDATE staff_members
+     SET suspended_until = strftime('%Y-%m-%d', updated_at, '+${clock.LOCAL_UTC_OFFSET_HOURS} hours', '+60 days')
+     WHERE status = 'suspended' AND suspended_until = '60 days'`
+  ).run();
+  return res.changes;
 }
 
 function update(userId, fields) {
@@ -290,6 +324,6 @@ module.exports = {
   get, all, ensure, setStatus, update, touchActivity, setRank, rankHistory, appendRankChange, REMOVAL_TYPES,
   applyRankRoles, removeTeamRoles, removeAllStaffRoles,
   vacationRole, addVacationRole, removeVacationRole,
-  suspend, unsuspend, liftExpiredSuspensions, suspensionEnd,
+  suspend, unsuspend, liftExpiredSuspensions, suspensionEnd, migrateLegacySuspensions,
   syncDeparture, markLeft,
 };

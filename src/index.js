@@ -44,6 +44,17 @@ try {
   console.error('[startup] If native bindings are missing, approve the better-sqlite3 install script and run npm rebuild better-sqlite3. Also check DB_PATH and directory write permissions.');
   process.exit(1);
 }
+
+// ⑬ ترحيل صفوف الإيقاف القديمة المكتوبة '60 days' بلا تاريخ — مرة عند
+// الإقلاع، idempotent: الترحيل يبني تاريخًا من updated_at فتحوّ الرفع الآلي
+// من مستحيل إلى سائر. يُستدعى قبل scheduler.start (سطر وصوله أدناه).
+try {
+  const migrated = staffService.migrateLegacySuspensions();
+  if (migrated) console.log(`[startup] ترميم إيقاف قديم: ${migrated} صف أرسل تاريخ نهاية محسوباً من updated_at`);
+} catch (e) {
+  // لا نقفل البوت على ترحيل سلبي — الرفع يدوياً يبقى ممكناً بـ /unsuspend
+  console.error('[startup] Legacy suspension migration skipped:', e.message);
+}
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages],
   partials: [Partials.Channel],

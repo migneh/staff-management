@@ -10,6 +10,7 @@ const staffService = require('../services/staff');
 const audit = require('../services/audit');
 const { COLORS, replyEphemeral, sendToChannel, dm, log } = require('../utils');
 const kit = require('../ui/kit');
+const clock = require('../clock'); // عقد الإيقاف تاريخ لا نص خام (⑬)
 
 const ID_RE = /^\d{15,22}$/;
 const DRAFT_TTL = 15 * 60 * 1000;
@@ -260,8 +261,12 @@ module.exports = {
         extra = `\n🧊 تجميد النقاط حتى ${fr.until} (${def.freezeDays} يوماً)`;
       }
       if (def.suspend) {
-        staffService.suspend(draft.target, '60 days');
-        extra += `\n⛔ تم الإيقاف\n↩️ يُرفع الإيقاف تلقائياً بعد 60 يوماً (أو يدوياً بـ \`/unsuspend\`)`;
+        // ⑬: كانت تكتب نصاً خاماً '60 days' — يعلق الموقوفاً للأبد لأن
+        // الرفع الآلي وروستر الإجازات يقارنانه معجمياً بسلسلة أقل من كل تاريخ.
+        // والعقد تاريخاً: آخر يوم موقوف كامل اليوم 59 والرفع في فجر اليوم الستين.
+        const until = clock.addDays(clock.today(), 60);
+        staffService.suspend(draft.target, until);
+        extra += `\n⛔ تم الإيقاف\n↩️ يُرفع الإيقاف تلقائياً بتاريخ ${kit.tsDate(until)} أو يدوياً بـ \`/unsuspend\``;
       }
       
       const e = warningCard(draft, { rowId: res.lastInsertRowid });

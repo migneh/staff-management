@@ -166,4 +166,5 @@ function nextMonth(yyyymm) {
 module.exports = {
   TZ, dayOf, today, nowIso, parseStamp, isValidDate, addDays, dayStartStamp,
   dayWindow, daysBetween, stampLocalDay, hoursSince, monthsSince, discordTs, previousMonth, nextMonth,
+  LOCAL_UTC_OFFSET_HOURS,
 };

@@ -2,6 +2,7 @@
 const { getDb } = require('../database');
 const staffService = require('./staff');
 const { INACTIVE_STATUSES } = require('../constants');
+const clock = require('../clock');
 
 function windowClause(days) {
   const value = Math.max(1, Math.min(90, Math.trunc(Number(days) || 7)));
@@ -26,7 +27,11 @@ function ticketLoad(userId, days = 7) {
 
 function moderationLoad(userId, days = 7) {
   const { value, since } = windowClause(days);
-  const row = getDb().prepare(`SELECT COUNT(*) actions, COUNT(DISTINCT date(created_at)) active_days
+  // أيام النشاط بأيام الرياض لا UTC (⑬): كانت date(created_at) تُقسّم
+  // رسائل فجر الرياض (UTC 21:00 فما بعده) في يوم الأمس، فانحرفت فقرة
+  // «أيام النشاط» عن واقعه. الوضع الآن: التصنيف داخل التجميعة لا في
+  // شرط المقارنة، فالفهرس على created_at سالم.
+  const row = getDb().prepare(`SELECT COUNT(*) actions, COUNT(DISTINCT strftime('%Y-%m-%d', created_at, '+${clock.LOCAL_UTC_OFFSET_HOURS} hours')) active_days
     FROM mod_actions WHERE moderator_id = ? AND created_at >= datetime('now', ?)`).get(userId, since);
   return { days: value, actions: row.actions || 0, activeDays: row.active_days || 0 };
 }
