@@ -134,3 +134,55 @@ describe('أمر استئناف الإنذار — طلب العضو نفسه (�
     assert.equal(getDb().prepare('SELECT COUNT(*) c FROM warning_appeals').get().c, 1);
   });
 });
+
+describe('أمر مراجعة قائمة الاستئنافات — راحة الإدارة (⑯)', () => {
+  const json = p => JSON.parse(JSON.stringify(p?.toJSON ? p.toJSON() : p));
+
+  /** أمر مراجعة بفلتر الحالة المعطى (تفريغه يعني الافتراضي pending). */
+  function reviewCommand(status = null) {
+    const actor = reviewer('other-4');
+    actor.options = { getString: () => status };
+    return actor;
+  }
+
+  test('بلا استئنافات: ردّ راحة صريح لا قائمة فارغة', async () => {
+    const actor = reviewCommand();
+    await commands.get('review-warning-appeals').execute(actor);
+    assert.match(textOf(actor.payload), /لا توجد استئنافات إنذارات/);
+  });
+
+  test('الافتراضي يعرض المفتوح فقط: المُراجَع ساقط من القائمة وبلا زرّ قرار', async () => {
+    seedStaff('warned');
+    const open = seedAppeal(seedWarning('warned', 'issuer-1').lastInsertRowid, 'ghost-1');
+    const rejected = seedAppeal(seedWarning('warned', 'issuer-1').lastInsertRowid, 'ghost-1');
+    getDb().prepare('UPDATE warning_appeals SET status = ?, reviewed_by = ? WHERE id = ?')
+      .run('rejected', 'other-0', rejected.lastInsertRowid);
+
+    const actor = reviewCommand();
+    await commands.get('review-warning-appeals').execute(actor);
+    const payload = json(actor.payload);
+    assert.equal(payload.embeds.length, 1, 'المُراجَع لا يظهر في العرض الافتراضي');
+    assert.match(payload.embeds[0].title, /استئناف/);
+    assert.equal(payload.components.length, 1);
+    assert.match(payload.components[0].components[0].custom_id, new RegExp(`appeal:approve:${open.lastInsertRowid}`));
+    assert.match(payload.components[0].components[1].custom_id, /appeal:reject/);
+    assert.equal(payload.ephemeral, true);
+  });
+
+  test('فلتر «كل الحالات»: المُراجَع يظهر بشهادته وبلا زرّ قرار', async () => {
+    seedStaff('warned');
+    const open = seedAppeal(seedWarning('warned', 'issuer-1').lastInsertRowid, 'ghost-1');
+    const rejected = seedAppeal(seedWarning('warned', 'issuer-1').lastInsertRowid, 'ghost-1');
+    getDb().prepare('UPDATE warning_appeals SET status = ?, reviewed_by = ? WHERE id = ?')
+      .run('rejected', 'other-0', rejected.lastInsertRowid);
+
+    const actor = reviewCommand('all');
+    await commands.get('review-warning-appeals').execute(actor);
+    const payload = json(actor.payload);
+    assert.equal(payload.embeds.length, 2, 'المُراجَع يظهر ببطاقته عبر فلتر كل الحالات');
+    const rows = payload.components.map(r => r.components[0].custom_id);
+    assert.deepEqual(rows, [`appeal:approve:${open.lastInsertRowid}`], 'الأزرار للمفتوح فقط حتى لو تعددت البطاقات');
+    const text = payload.embeds.map(e => `${e.title}\n${e.description}`).join('\n');
+    assert.match(text, /رُفض/, 'بطاقة المُراجَع تحمل حالته في الوصف');
+  });
+});
