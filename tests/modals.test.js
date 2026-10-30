@@ -7,7 +7,6 @@ const path = require('node:path');
 const { ComponentType } = require('discord.js');
 const forms = require('../src/ui/forms');
 const { components: registry, modules } = require('../src/commands');
-const { LEVELS } = require('../src/constants');
 
 require('./sqlite-compat').install();
 process.env.DB_PATH = ':memory:';
@@ -137,5 +136,4 @@ test('النماذج تُفتح بجلسة قابلة للتصحيح وتُغل�
   session.retryable = false;
   forms.finish(submit, session);   // نجاح: تُغلق الجلسة
   assert.equal(forms.lookup({ user: { id: 'u1' }, guildId: 'g1', customId: `probe:modal:form:${token}` }), null, 'بقيت الجلسة بعد النجاح');
-  assert.equal(LEVELS.STAFF >= 1, true);
 });

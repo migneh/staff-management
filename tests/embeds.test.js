@@ -87,7 +87,7 @@ test('kit.card يقصّ النصوص ويسقط الحقول الفارغة وي
   assert.deepEqual(names, ['صالح', 'طويل']);
   assert(e.fields.every(f => f.value.length <= LIMITS.value));
   assert.equal(e.footer.text, `${kit.BRAND} • ${kit.stamp()}`);
-  assert.equal(e.timestamp != null || true, true);
+  assert.ok(e.timestamp != null, 'البطاقة بلا طابع وقت');
 });
 
 test('kit.card يحترم التذييل المخصّص ووقتاً نسبياً عند الطلب', () => {
