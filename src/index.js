@@ -50,7 +50,7 @@ try {
 // من مستحيل إلى سائر. يُستدعى قبل scheduler.start (سطر وصوله أدناه).
 try {
   const migrated = staffService.migrateLegacySuspensions();
-  if (migrated) console.log(`[startup] ترميم إيقاف قديم: ${migrated} صف أرسل تاريخ نهاية محسوباً من updated_at`);
+  if (migrated) console.log(`[startup] ترحيل إيقاف قديم: ${migrated} صف عُدّل بتاريخ نهاية محسوب من updated_at`);
 } catch (e) {
   // لا نقفل البوت على ترحيل سلبي — الرفع يدوياً يبقى ممكناً بـ /unsuspend
   console.error('[startup] Legacy suspension migration skipped:', e.message);

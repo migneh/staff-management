@@ -62,11 +62,11 @@ describe('عقد الإيقاف — تاريخ لا نص خام (⑬)', () => {
     assert.equal(after.suspended_until, null);
   });
 
-  test('النص الخام القديم "60 days" كان يعلق للأبد — نموذج يثبت العلة (غارد لا يجدد العلة)', () => {
+  test('النص الخام القديم "60 days" كان يعلق للأبد — نموذج يثبت العلة (الحارس يمنع عودتها)', () => {
     freshMember('6103');
-    // نزرع النفس ما كانت الشيفرة القديمة تكتبه: النص الخام
+    // نزرع نفس ما كانت الشيفرة القديمة تكتبه: النص الخام
     getDb().prepare("UPDATE staff_members SET status = 'suspended', suspended_until = '60 days' WHERE user_id = ?").run('6103');
-    // أي تاريخ مستقبلي: المقارنة المعجمية '60 days' <= anything-2026 صاغرة — لا رفع أبداً
+    // أي تاريخ مستقبلي: المقارنة المعجمية تجعل '60 days' أكبر من كل تاريخ ساقط — لا رفع أبداً
     assert.deepEqual(staffService.liftExpiredSuspensions(clock.addDays(clock.today(), 500)), []);
   });
 });
@@ -97,7 +97,7 @@ describe('ترحيل الإيقافات القديمة — migrateLegacySuspensi
     assert.equal(row.suspended_until, clock.addDays(clock.today(), 30));
   });
 
-  test('صف فارغ التاريخ (NULL) لا يستحق ترحيلاً ولا يُعطّله', () => {
+  test('صف فارغ التاريخ (NULL) لا يستحق ترحيلاً ولا يضرّ به', () => {
     seedSuspended('6204', null, '2026-08-27 09:00:00');
     assert.equal(staffService.migrateLegacySuspensions(), 0);
     const row = getDb().prepare('SELECT suspended_until FROM staff_members WHERE user_id = ?').get('6204');
