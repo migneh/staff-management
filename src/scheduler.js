@@ -850,16 +850,21 @@ async function monthlyBest(client) {
 }
 
 /**
- * عقوبة الغياب: يطبق -50 absence_10d لكل إداري غاب 10 أيام متتالية بلا إجازة.
+ * عقوبة الغياب: يطبق -50 absence_10d لكل إداري غاب عتبة أيام متتالية بلا إجازة.
  *
- * يتحقق من: لا نشاط في activity_logs لآخر 10 أيام، ولا إجازة نشطة، وليس مستثنى.
+ * بوابة الملاحظة أولاً: عضو لم نراقبه مدة كافية لا يُعاقب. المعيار «منذ
+ * متى نراه» — آخر نشاط أو تاريخ دخوله — والاعتماد على «هل في نشاط
+ * خلال النافذة» وحده كان يخصم عضواً مسجَّلاً قبل دقائق لأن قواعد بياناته
+ * فارغة بعد. سبب `absence_10d` يبقى باسمه (صفوف قائمة وتسميات) لكن
+ * عتبته من إعداد `settings.absenceDays()` — الافتراضي 14، حدود 3–60.
  * إمضاء الفترة (قرار المالك D9): refId = آخر يوم نشاط للعضو (أو تاريخ دخوله)
  * — صف واحد لكل فترة غياب مهما طالت، لا خصمًا يومياً؛ التكرار على نفس
  * الإمضاء يرفضه الفهرس الفريد على (user_id, reason_key, ref_type, ref_id).
  */
 async function absencePenalty(client) {
   const t = today();
-  const tenDaysAgo = addDays(t, -10);
+  const days = settings.absenceDays();
+  const since = addDays(t, -days);
   const db = getDb();
   const onLeave = activeLeaveUsers();
 
@@ -869,11 +874,25 @@ async function absencePenalty(client) {
     if (m.status === 'probation' && m.probation_exempt) continue;
     if (onLeave.has(String(m.user_id))) continue;
 
-    // هل لديه نشاط في آخر 10 أيام؟
+    // ===== بوابة الملاحظة: قبل أي فحص آخر =====
+    // لا نشاط في السجل ليس دليل غياب بذاته: قد يكون العضو مسجَّلاً حديثاً.
+    // نراجعه أولاً: «منذ» = آخر نشاط، وإلا تاريخ الدخول (ثم rank_since
+    // احتياطاً). لم تكتمل المراقبة عتبتَ الأيام؟ لا عقوبة.
+    // وبلا أي مطلع زمني معروف أصلاً فلا مدى ملاحظة → لا عقوبة.
+    const anchorFirst = stampLocalDay(m.last_activity)
+      || stampLocalDay(m.joined_at)
+      || stampLocalDay(m.rank_since);
+    const observedDays = anchorFirst ? daysBetween(anchorFirst, t) : null;
+    if (observedDays === null || observedDays < days) continue;
+
+    // هل لديه نشاط في آخر عتبة الأيام؟ البوابة تغطي هذه الحالة عملياً:
+    // نشاط داخل النافذة يعني آخر ملاحظة أحدث من العتبة ويسقط قبلنا.
+    // يبقى الفحص الصريح حمايةً من انحراف رزمة أيام بين العمود الدائم
+    // `last_activity` وسجل `activity_logs`.
     const recentActivity = db.prepare(`
       SELECT 1 FROM activity_logs
       WHERE user_id = ? AND day >= ? AND day <= ? LIMIT 1
-    `).get(m.user_id, tenDaysAgo, t);
+    `).get(m.user_id, since, t);
 
     if (recentActivity) continue; // لديه نشاط حديث
 
@@ -882,7 +901,7 @@ async function absencePenalty(client) {
       SELECT 1 FROM leave_requests
       WHERE user_id = ? AND status = 'approved' AND start_date <= ? AND end_date >= ?
       LIMIT 1
-    `).get(m.user_id, t, tenDaysAgo);
+    `).get(m.user_id, t, since);
     if (hasLeave) continue;
 
     // ===== مرجع الفترة (قرار المالك D9): مرة واحدة لكل فترة غياب =====
@@ -892,15 +911,14 @@ async function absencePenalty(client) {
     // تحت تعليق «مرة واحدة لكل فترة». الإمضاء الثابت يجعل الفترة صفّاً
     // واحداً مهما طالت: التكرار على نفس الإمضاء يصطدم بالفهرس الفريد.
     // والمصدر هو العمود الدائم staff_members.last_activity لا MAX(day) من
-    // activity_logs: العمود يُدَّت مع كل رسالة إداري على التوازي مع سجل
+    // activity_logs: العمود يُحدث مع كل رسالة إداري على التوازي مع سجل
     // النشاط (touchActivity قبل activity.record) وهو خارج نطاق تقليم
     // activity_logs (pruneActivity) — الجدول المقلَّم كان يذيب هويّة الفترة
     // بمرور أشهر فيغيّر إمضاء فترة قُضي فيها سلفاً فتُخصم مرة أخرى.
-    // الإمضاء بتاريخ الرياض للنشاط — تقطيع UTC كان يزيحه ليلةً عند الفجر
-    const anchor = stampLocalDay(m.last_activity)
-      || stampLocalDay(m.joined_at)
-      || stampLocalDay(m.rank_since)
-      || tenDaysAgo;
+    // الإمضاء بتاريخ الرياض للنشاط — تقطيع UTC كان يزيحه ليلةً عند الفجر.
+    // بعد بوابة الملاحظة الإمضاء موجود حتماً (خلا الإسقاط الاحتياطي القديم
+    // إلى تاريخ النافذة: عضو بلا مطلع زمني قط لا يصل إلى هنا أصلاً).
+    const anchor = anchorFirst;
 
     // هل سبق تطبيق العقوبة لهذه الفترة؟ (refId = إمضاء الفترة لا تاريخ اليوم)
     const already = db.prepare(`
@@ -913,9 +931,9 @@ async function absencePenalty(client) {
     const r = points.add({ userId: m.user_id, reasonKey: 'absence_10d', refType: 'absence', refId: anchor, addedBy: 'auto' });
     if (r.ok) {
       applied++;
-      logger.warn(`📉 عقوبة غياب: <@${m.user_id}> (${m.rank}) — 10 أيام بلا نشاط ولا إجازة.`);
-      await dm(client, m.user_id, { embeds: [embed('📉 عقوبة غياب', `لم يُرصد أي نشاط منك منذ **10 أيام** ولم تقدم طلب إجازة. تم خصم **50 نقطة** من رصيدك.`, COLORS.danger)] });
-      await sendToChannel(client, 'staff-alerts', { embeds: [embed('📉 عقوبة غياب', `<@${m.user_id}> (${m.rank}) — 10 أيام بلا نشاط ولا إجازة. تم خصم 50 نقطة.`, COLORS.danger)] });
+      logger.warn(`📉 عقوبة غياب: <@${m.user_id}> (${m.rank}) — ${days} أيام بلا نشاط ولا إجازة.`);
+      await dm(client, m.user_id, { embeds: [embed('📉 عقوبة غياب', `لم يُرصد أي نشاط منك منذ **${days} أيام** ولم تقدم طلب إجازة. تم خصم **50 نقطة** من رصيدك.`, COLORS.danger)] });
+      await sendToChannel(client, 'staff-alerts', { embeds: [embed('📉 عقوبة غياب', `<@${m.user_id}> (${m.rank}) — ${days} أيام بلا نشاط ولا إجازة. تم خصم 50 نقطة.`, COLORS.danger)] });
     }
   }
   if (applied) logger.info(`📉 عقوبة الغياب: طُبقت على ${applied} إداري.`);

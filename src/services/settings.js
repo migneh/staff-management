@@ -8,7 +8,7 @@ const fileConfig = require('../config');
 const logger = require('../logger').log('settings');
 const {
   SUPPORT_RANKS, MOD_RANKS, GENERAL_MANAGEMENT_RANKS, LEAVE_GLOBAL, LEAVE_RULES, RESIGNATION_GLOBAL, VACATION_ROLE_TIMING,
-  CHANNEL_KEYS, OPTIONAL_CHANNEL_KEYS, CHANNEL_META,
+  CHANNEL_KEYS, OPTIONAL_CHANNEL_KEYS, CHANNEL_META, ABSENCE,
 } = require('../constants');
 
 let cache = null;
@@ -167,6 +167,16 @@ function resetPolicy(key) {
   cache = null;
 }
 
+/** عتبة الغياب بالأيام: 3–60، الافتراضي 14، تُضبط من /setup (برف 04-contracts).
+ *  الرقم يُقيَّد داخل الحدود، والقيمة غير الرقمية تعود إلى الافتراضي
+ *  بدل أن تبطل الضبط كله — كما تفعل قواعد الإجازات مع القيم الغريبة. */
+function absenceDays() {
+  const raw = Number(policy('absenceDays', ABSENCE.penaltyDays));
+  if (!Number.isFinite(raw)) return ABSENCE.penaltyDays;
+  const clamped = Math.min(60, Math.max(3, Math.floor(raw)));
+  return clamped;
+}
+
 /** قواعد الإجازات: الافتراضي ← config.json ← إعداد /setup */
 function leavePolicy(type = null) {
   const base = { ...LEAVE_GLOBAL, ...(fileConfig.leave || {}) };
@@ -249,7 +259,7 @@ function status() {
 module.exports = {
   load, set, setRole, setGovernanceRole, setChannel, setActivity, setTicketLogBotId,
   roles, channels, activityChannels, roleId, channelId, ticketLogBotId, governanceRoleId, vacationRoleId, status,
-  policy, setPolicy, resetPolicy, leavePolicy, resignationPolicy, VACATION_ROLE_TIMING,
+  policy, setPolicy, resetPolicy, absenceDays, leavePolicy, resignationPolicy, VACATION_ROLE_TIMING,
   CHANNEL_KEYS, OPTIONAL_CHANNEL_KEYS, CHANNEL_META,
   featureToggle, setFeatureToggle, resetFeatureToggles, FEATURE_TOGGLES, FEATURE_TOGGLES_DEFAULTS, isFeatureToggle,
 };

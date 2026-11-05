@@ -104,7 +104,7 @@ const FAQ_CATEGORIES = [
 const ACTIVITY_WEIGHTS = { ticket: 0.5, staff: 0.25, moderation: 0.25, general: 0.1 };
 const ACTIVITY_TYPE_NAMES = { ticket: 'قنوات التكتات', staff: 'قنوات الإدارة', moderation: 'قنوات الإشراف', general: 'القنوات العامة' };
 const SPAM = { minLength: 8, duplicateWindowMs: 2 * 60 * 1000, maxGeneralPerDay: 20 };
-const ABSENCE = { dmHours: 72, staffAlertHours: 96, idleDays: 7 };
+const ABSENCE = { dmHours: 72, staffAlertHours: 96, idleDays: 7, penaltyDays: 14 };
 
 // ===== الإجازات =====
 const LEAVE_TYPES = { normal: 'عادية', emergency: 'طارئة', sick: 'مرضية', study: 'دراسة', special: 'ظروف خاصة' };

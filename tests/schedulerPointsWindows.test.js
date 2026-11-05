@@ -8,6 +8,7 @@ const assert = require('node:assert/strict');
 const { openMemoryDb, getDb } = require('../src/database');
 const scheduler = require('../src/scheduler');
 const retention = require('../src/services/retention');
+const settings = require('../src/services/settings');
 
 const RealDate = Date;
 async function withDate(iso, fn) {
@@ -120,4 +121,99 @@ test('monthlyBest evaluates and awards the complete previous month at a year bou
     assert.equal(award.ref_id, '2025-12-01');
     assert.match(award.created_at, /^2026-/);
   });
+});
+
+// ===== بوابة الملاحظة (الإصلاح الجديد): عضو حديث/ضليل مستهلك لا يُعاقب =====
+
+/** عميل وهمي يلتقط الرسائل الخاصة والتحذيرات القنوية نصياً. */
+function stubClient() {
+  const dms = [];
+  const alerts = [];
+  const capture = (bag) => (payload) => {
+    if (payload && payload.embeds && payload.embeds[0]) bag.push(`${payload.embeds[0].data?.title || ''}\n${payload.embeds[0].data?.description || ''}`);
+    return Promise.resolve();
+  };
+  return {
+    dms, alerts,
+    users: { fetch: async () => ({ send: capture(dms) }) },
+    channels: { fetch: async () => ({ send: capture(alerts) }) },
+  };
+}
+
+/** إداري مسجَّل بتاريخ دخول نعرفه وآخر نشاط (اختياري) بالأيام قبل اليوم. */
+function joinedMember(id, { joinedDaysAgo = 0, lastActivityDaysAgo = null, at = '2026-03-15' } = {}) {
+  const dayAt = (d, daysAgo) => {
+    const dt = new Date(`${d}T12:00:00.000Z`);
+    dt.setUTCDate(dt.getUTCDate() - daysAgo);
+    return dt.toISOString().replace('T', ' ').slice(0, 19);
+  };
+  getDb().prepare(`INSERT INTO staff_members (user_id, username, team, rank, status, rank_since, joined_at, last_activity)
+    VALUES (?, ?, 'support', 'Support', 'active', '2020-01-01 00:00:00', ?, ?)`)
+    .run(id, id, dayAt(at, joinedDaysAgo), lastActivityDaysAgo === null ? null : dayAt(at, lastActivityDaysAgo));
+}
+
+test('بوابة الملاحظة: عضو جديد يوم 0 و13 لا تخصمه عقوبة الغياب إطلاقاً', async () => {
+  await withDate('2026-03-15T12:00:00.000Z', async () => {
+    joinedMember('day0-user', { joinedDaysAgo: 0 });
+    joinedMember('day13-user', { joinedDaysAgo: 13 });
+    await scheduler.absencePenalty({});
+    const rows = getDb().prepare(`SELECT COUNT(*) c FROM promotion_points WHERE reason_key = 'absence_10d'`).get().c;
+    assert.equal(rows, 0, 'العضو غير المُلاحَظ العتبة كاملة لا سجل له لا خصم');
+  });
+});
+
+test('يوم 14 بعد الدخول: صف واحد بالضبط بإمضاء تاريخ الدخول', async () => {
+  await withDate('2026-03-15T12:00:00.000Z', async () => {
+    joinedMember('day14-user', { joinedDaysAgo: 14 });
+    const client = stubClient();
+    await scheduler.absencePenalty(client);
+    const rows = getDb().prepare(`SELECT ref_id, points FROM promotion_points WHERE reason_key = 'absence_10d' AND user_id = 'day14-user'`).all();
+    assert.equal(rows.length, 1, 'يوم 14 بالضبط هو أول يوم عقوبة');
+    assert.equal(rows[0].ref_id, '2026-03-01', 'الإمضاء تاريخ الدخول 2026-03-15 ناقص 14');
+    assert.equal(rows[0].points, -50);
+    // النصوص تُظهر العتبة المضبوطة (14) لا القيمة الصالحة القديمة
+    const said = [...client.dms, ...client.alerts].join('\n');
+    assert.match(said, /14 أيام/, 'خصم العتبة الحية 14 في رسالة التنبيه');
+    assert.doesNotMatch(said, /منذ \*\*10 أيام/, 'لا أثر للعتبة الصالحة 10 في النصوص');
+  });
+});
+
+test('عتبة قابلة للضبط: صمت 5 أيام يقبل العقوبة بعد خفضها إلى 3 وتُنصَّ بالرقم', async () => {
+  try {
+    await withDate('2026-03-15T12:00:00.000Z', async () => {
+      // آخر نشاط قبل 5 أيام: أقل من العتبة الافتراضية 14
+      joinedMember('quiet-user', { joinedDaysAgo: 60, lastActivityDaysAgo: 5 });
+      await scheduler.absencePenalty({});
+      let rows = getDb().prepare(`SELECT COUNT(*) c FROM promotion_points WHERE reason_key = 'absence_10d' AND user_id = 'quiet-user'`).get().c;
+      assert.equal(rows, 0, '5 أيام صمت دون العتبة الافتراضية 14 → لا عقوبة');
+
+      // خفض العتبة إلى 3: صمت 5 أيام يقبلها فتنطبق العقوبة
+      settings.setPolicy('absenceDays', 3);
+      const client = stubClient();
+      await scheduler.absencePenalty(client);
+      rows = getDb().prepare(`SELECT ref_id FROM promotion_points WHERE reason_key = 'absence_10d' AND user_id = 'quiet-user'`).all();
+      assert.equal(rows.length, 1, 'خفض العتبة إلى 3 يجعل صمت 5 أيام خاضعاً للعقوبة');
+      assert.equal(rows[0].ref_id, '2026-03-10', 'الإمضاء آخر يوم نشاط لا تاريخ الدخول');
+      const said = [...client.dms, ...client.alerts].join('\n');
+      assert.match(said, /3 أيام/, 'النصوص تعرض العتبة المضبوطة 3');
+    });
+  } finally {
+    settings.resetPolicy('absenceDays');
+  }
+});
+
+test('قيمة سياسة غريبة تعود إلى الافتراضي والقيمة المنطقية تُقيَّد داخل 3–60', async () => {
+  try {
+    assert.equal(settings.absenceDays(), 14, 'بلا إعداد: 14');
+    settings.setPolicy('absenceDays', 'ما لا يعده');
+    assert.equal(settings.absenceDays(), 14, 'نص عشوائي → الافتراضي 14');
+    settings.setPolicy('absenceDays', 100);
+    assert.equal(settings.absenceDays(), 60, 'الحد العلوي يدفع 100 إلى 60');
+    settings.setPolicy('absenceDays', 1);
+    assert.equal(settings.absenceDays(), 3, 'الحد الأدنى يدفع 1 إلى 3');
+    settings.resetPolicy('absenceDays');
+    assert.equal(settings.absenceDays(), 14, 'إعادة الضبط تعود إلى الافتراضي');
+  } finally {
+    settings.resetPolicy('absenceDays');
+  }
 });
