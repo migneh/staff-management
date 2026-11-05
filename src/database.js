@@ -3,6 +3,7 @@ const Database = require('better-sqlite3');
 const fs = require('fs');
 const path = require('path');
 const config = require('./config');
+const { stampLocalDay, daysBetween } = require('./clock');
 
 let db;
 
@@ -682,6 +683,7 @@ const MIGRATION_STEPS = [
   'points_ledger',
   'point_freezes',
   'points_unique_ref_per_user',
+  'absence_reversal_v1',
 ];
 
 /** يضمن وجود دفتر الإصدارات وسجل الأعطال حتى لو استُدعي migrate على قاعدة بلا SCHEMA. */
@@ -773,6 +775,79 @@ function runMigrationStep(database, name, fn) {
   // عطل التنفيذ فقط: خطوة نجحت لا يمكن أن تكون مكسورة تنفيذاً. أما عطل
   // البيانات فيبقى — فخطوة تنجح وهي تعمل بحارسٍ مؤقتٍ لم تُعالج البيانات بعد.
   clearSchemaFaults(database, name, 'crash');
+}
+
+/**
+ * تراجع عقوبات الغياب المطبَّقة قبل اكتمال فترة الملاحظة (البرف 00-task، بند Q4).
+ *
+ * كل صف عقوبة `absence_10d` قديم يزعم غياباً لعشرة أيام متتالية، ويكفي
+ * إثبات زيف الادعاء من الصف نفسه بلا أي استعلام خارجي: الصف يوثّق إمضاء
+ * الفترة (ref_id = آخر يوم نشاط وإلا تاريخ الدخول) ويوم الخصم
+ * (created_at)، فإذا لم تبلغ الملاحظة بحد ذاتها عتبة الادعاء «10» كان
+ * الحكم زائفاً بذاته. مصدر العلّة: الشيفرة القديمة اكتفت بأن يكون سجل
+ * النشاط فارغاً خلال 10 أيام، فحُكم على العضو المسجَّل حديثاً بملاحظة
+ * قليلة أو معدومة.
+ *
+ * لماذا عتبة الادعاء 10 لا سياسة اليوم 14: هذه الصفوف وُلدت بنظام كانت
+ * عتبته 10، وما بلغت ملاحظته تلك العتبة كان حكمه مبرَّراً بنظام زمانه.
+ * رفع السياسة لاحقاً إلى 14 سياسة جديدة للمستقبل، لا تراجعٌ لماضٍ سليم.
+ *
+ * التراجع صف تعويض لا حذف: الدفتر ملحق، وكل صف زائف يقابله صف مضاد
+ * بنقاط معكوسة وعصر الرتبة الأصلي نفسه. الفريد على
+ * (user_id, reason_key, ref_type, ref_id) يجعل إعادة التنفيذ من أي
+ * سبب صامدة بلا صفوف مضاعفة.
+ *
+ * @returns {number} عدد صفوف التعويض المكتوبة فعلاً
+ */
+function repairAbsencePenalties(database) {
+  const rows = database.prepare(`
+    SELECT id, user_id, points, ref_id, rank_epoch, created_at
+    FROM promotion_points
+    WHERE reason_key = 'absence_10d' AND ref_type = 'absence' AND ref_id IS NOT NULL
+  `).all();
+
+  const insert = database.prepare(`
+    INSERT OR IGNORE INTO promotion_points
+      (user_id, points, reason_key, reason, ref_type, ref_id, added_by, rank_epoch)
+    VALUES (?, ?, 'absence_reversal', ?, 'absence', ?, 'system', ?)
+  `);
+
+  let reversed = 0;
+  for (const row of rows) {
+    // يوم الخصم بتوقيت الرياض كما يحسبه بقية النظام. فروق الساعات عند
+    // منتصف الليل قد تنزح اليوم يوماً، وهذا في حدود التسامح المقبول:
+    // تمييز 9 من 10 لا يتأثر بانحراف ساعات محدود.
+    const penaltyDay = stampLocalDay(row.created_at);
+    const observed = penaltyDay ? daysBetween(row.ref_id, penaltyDay) : null;
+    if (observed === null || observed >= 10) continue;
+    const result = insert.run(
+      row.user_id,
+      -row.points,
+      'تراجع عن عقوبة غياب طُبِّقت قبل اكتمال فترة الملاحظة',
+      row.ref_id,
+      row.rank_epoch ?? 0,
+    );
+    if (result.changes > 0) reversed++;
+  }
+
+  if (reversed > 0) {
+    // تسجيل الملخص في سجل التدقيق (البرف Q4). استيراد متأخر عن عمد: audit
+    // يستورد database، والاستيراد المباشر سيعقد دائرة. إن سقط التسجيل
+    // فلا تسقط معه خطوة الترحيل نفسها.
+    try {
+      require('./services/audit').record({
+        action: 'absence_penalties_reversed',
+        actorId: 'system',
+        details: { reversed, sourceKey: 'absence_10d' },
+      });
+    } catch (e) {
+      require('./logger').log('database').warn(`تراجع عقوبات الغياب: فشل تسجيل ملخص audit: ${e.message}`);
+    }
+    // ملخص الطرفية فقط — لا يُرسَل أي ملخص إلى قناة staff-logs وقت الإقلاع لغياب عميل ديسكورد.
+    console.log(`[migrate] ↩️ تراجع عن ${reversed} عقوبة غياب طُبِّقت قبل اكتمال الملاحظة: صفوف تعويض أُضيفت ومُوثِّقت في audit.`);
+  }
+
+  return reversed;
 }
 
 function migrate(database) {
@@ -1026,6 +1101,10 @@ function migrate(database) {
     database.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_points_unique_user_ref
       ON promotion_points(user_id, reason_key, ref_type, ref_id) WHERE ref_id IS NOT NULL`);
   });
+
+  // تراجع لمرة واحدة (البرف 00-task، بند Q4): عقوبات الغياب المطبَّقة قبل اكتمال
+  // الملاحظة تُعوَّض بصفوف +50 لا تُمحى — الدفتر ملحق. راجع repairAbsencePenalties.
+  runMigrationStep(database, 'absence_reversal_v1', () => { repairAbsencePenalties(database); });
 }
 
 /**
@@ -1158,6 +1237,7 @@ function openMemoryDb() {
 
 module.exports = {
   getDb, openMemoryDb, migrate, migrateFaqCategories,
+  repairAbsencePenalties,
   FAQ_CATEGORY_REMAP, FAQ_MIGRATIONS, FAQ_MIGRATION_KEY, FAQ_MIGRATION_VERSION,
   pendingFaqVersions, runFaqStep, readFaqMigrationVersion, applyFaqMigrations,
   duplicateTicketSources, ensureTicketSourceUniqueness,
