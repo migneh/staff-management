@@ -25,9 +25,9 @@ Fix the bug at its cause (no "observed long enough" gate), make the threshold a 
 
 ## Milestones
 
-- [ ] M1: steps 1–2 (bug fixed, can ship alone)
-- [ ] M2: steps 3–5 (modes work via policy rows)
-- [ ] M3: steps 6–8 (UI + docs)
+- [x] M1: steps 1–2 (bug fixed, can ship alone) — commits `5de4fa5`, `6af8b88`
+- [x] M2: steps 3–5 (modes work via policy rows) — commits `ac2b7d6`, `bfc1504`, `af9ed4a`
+- [x] M3: steps 6–8 (UI + docs) — commits `072b31e`, `2cec9a0`, `d0db3bf`
 
 ## Risks
 

@@ -1,6 +1,6 @@
 # Task: Fix absence penalty + make promotion system configurable
 
-**Status:** answers recorded, awaiting approval · **Owner:** migneh · **Last updated:** 2026-11-05
+**Status:** implemented & committed — steps 1–8 done (`npm run check` green: 659/659 tests, 49 warnings / 0 errors, registry 79 • 159) · **Owner:** migneh · **Last updated:** 2026-11-07
 
 ## Goal
 
@@ -37,21 +37,23 @@ Boss / Server Manager edit settings; all staff see results in `/promotion-info`,
 
 ## Acceptance criteria
 
-- [ ] Fresh DB + newly registered members: `absencePenalty` writes **0** rows, on day 0 and day 13 after registration.
-- [ ] A member with no activity for 14 observed days (and no leave) gets exactly one -50 row per absence episode (D9 anchoring preserved). Day 13 → none, day 14 → one.
-- [ ] Absence days editable (bounds 3–60) and DM/alert text shows the configured number.
-- [ ] Wrongly applied penalties are reversed per Q4, idempotently, and audit-logged.
-- [ ] `promotion.mode=points` → `evaluate()` output identical to today (existing tests unchanged).
-- [ ] `mode=score` → score gate replaces the points gate; `mode=both` → combined per Q2; gate rows show actual vs required.
-- [ ] Thresholds/rules editable from Discord; invalid values rejected with Arabic error; reset restores constants.
-- [ ] Every screen shows the same threshold the gate uses (one source of truth).
+- [x] Fresh DB + newly registered members: `absencePenalty` writes **0** rows, on day 0 and day 13 after registration.
+- [x] A member with no activity for 14 observed days (and no leave) gets exactly one -50 row per absence episode (D9 anchoring preserved). Day 13 → none, day 14 → one.
+- [x] Absence days editable (bounds 3–60) and DM/alert text shows the configured number.
+- [x] Wrongly applied penalties are reversed per Q4, idempotently, and audit-logged.
+- [x] `promotion.mode=points` → `evaluate()` output identical to today (existing tests unchanged).
+- [x] `mode=score` → score gate replaces the points gate; `mode=both` → combined per Q2; gate rows show actual vs required.
+- [x] Thresholds/rules editable from Discord; invalid values rejected with Arabic error; reset restores constants.
+- [x] Every screen shows the same threshold the gate uses (one source of truth).
+
+> Evidence per criterion: `05-plan.md` step notes (steps 1–6 own the absence/mode/display criteria; step 7 owns the Discord-editable one). Reverse-grip proofs and test counts recorded there.
 
 ## Definition of done
 
-- [ ] `npm run check` passes (lint 0 errors, tests, validate, docs check) — paste output.
-- [ ] New tests for each criterion above.
-- [ ] README updated (Arabic, matching existing style).
-- [ ] No new dependencies.
+- [x] `npm run check` passes (lint 0 errors, tests, validate, docs check) — latest run: `49 problems (0 errors, 49 warnings)` · `tests 659 / pass 659 / fail 0` · `سجل سليم: 79 أمر • 159 مكوّناً` (79 • 159) · exit 0.
+- [x] New tests for each criterion above.
+- [x] README updated (Arabic, matching existing style).
+- [x] No new dependencies.
 
 ## Open questions
 
