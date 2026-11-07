@@ -920,7 +920,8 @@ function migrate(database) {
     // مقيَّد فيفلت الحدّ إلى user_id وحده، فيُقرأ كامل تاريخ العضو ثم يُرشَّح.
     database.exec('CREATE INDEX IF NOT EXISTS idx_activity_user_created ON activity_logs(user_id, created_at)');
 
-    // services/score.js:69 وpromotions.js:207 — الجدول بلا أي فهرس إطلاقاً.
+    // قرّاء staff_notes: rawBatch في reports.js (مواد الأداء) وبوابة
+    // الملاحظات السلبية في promotions.js — الجدول بلا أي فهرس إطلاقاً.
     database.exec('CREATE INDEX IF NOT EXISTS idx_staff_notes_user ON staff_notes(user_id, created_at)');
 
     // يوميات التذكير: يفلتر processTaskReminders بـ status ثم task_type ثم due_date

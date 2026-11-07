@@ -58,9 +58,9 @@ function isTrackingEnabled() {
  * البوابة على الكتابة لا على القراءة: إيقاف التتبّع يوقف صفوفاً جديدة فقط،
  * وما سُجّل سابقاً يبقى يُقرأ. ما يتأثر بالإيقاف — ولا بدّ من ذكره صراحة:
  *   • Score: عوامل «الرسائل» و«التواصل»/«النشاط»/«الالتزام»
- *     (src/services/score.js:51) تقرأ activity_logs، فالنوافذ الجديدة تُحسب
+ *     (مواد خام من rawBatch في reports.js تُغذّي score.js) تقرأ activity_logs، فالنوافذ الجديدة تُحسب
  *     على نشاط ناقص؛ والنوافذ المنتهية قبل الإيقاف تبقى صحيحة.
- *   • بوابات الترقية: `minMessages` و`activeDays` (src/services/promotions.js:148,177).
+ *   • بوابات الترقية: حدا «الرسائل» و«التواجد» في قاعدة المسار (promotions.js).
  *   • كشف الغياب بعد الإجازة (src/scheduler.js:154) و«سلسلة الأسابيع النشطة»
  *     في التقارير (src/services/reports.js:42).
  *   • /activity و/my-status (stats) وتقارير retention وحجم القاعدة في /system-status.
