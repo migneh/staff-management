@@ -2,8 +2,9 @@
 const forms = require('../ui/forms');
 const { homeRow } = require('../ui/navigation');
 const { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const { LEVELS, SUPPORT_PROMOTIONS, MOD_PROMOTIONS, POINTS_THRESHOLDS } = require('../constants');
+const { LEVELS, SUPPORT_PROMOTIONS, MOD_PROMOTIONS } = require('../constants');
 const promo = require('../services/promotions');
+const promotionRules = require('../services/promotionRules');
 const staffService = require('../services/staff');
 const audit = require('../services/audit');
 const { embed, COLORS, replyEphemeral, sendToChannel, dm, log, arDigits } = require('../utils');
@@ -21,7 +22,7 @@ function statusEmbed(staff, ev) {
 
 function neededFor(r) {
   const s = staffService.get(r.user_id);
-  const rule = s ? promo.nextPromotion(s) : null;
+  const rule = s ? promotionRules.ruleFor(s.team, s.rank) : null;
   return rule && rule.to === r.to_rank ? (rule.approvals || 1) : 1;
 }
 
@@ -79,11 +80,12 @@ module.exports = {
         const s = staffService.get(i.user.id);
         const e1 = embed('🎧 ترقيات فريق الدعم الفني', SUPPORT_PROMOTIONS.map(p => {
           const msg = p.minMessages ? `📝 ${p.minMessages}+ رسالة` : '';
-          const pointsThreshold = POINTS_THRESHOLDS.support?.[p.from] || '—';
+          // العتبة من طبقة القواعد: تجاوز السياسة يعرض هنا حياً لا من الثوابت
+          const pointsThreshold = promotionRules.ruleFor('support', p.from)?.pointsThreshold || '—';
           return `**${p.from} → ${p.to}**\n⏳ ${p.months} شهر ${msg ? '• ' + msg : ''} • 💯 نقاط ${arDigits(pointsThreshold)}+ • ⭐ ${p.rating}+ • ⚠️ أقصى ${p.maxWarnings} إنذار • 👥 ${p.approvers}`;
         }).join('\n\n') + '\n\n**Support Office → Boss**: يدوي بقرار Boss', COLORS.info);
         const e2 = embed('🛡️ ترقيات فريق الإشراف', MOD_PROMOTIONS.map(p => {
-          const pointsThreshold = POINTS_THRESHOLDS.moderation?.[p.from] || '—';
+          const pointsThreshold = promotionRules.ruleFor('moderation', p.from)?.pointsThreshold || '—';
           return `**${p.from} → ${p.to}**\n⏳ ${p.months} شهر • 💯 نقاط ${arDigits(pointsThreshold)}+ • 🛡️ ${p.actions}+ مخالفة • ⚠️ أقصى ${p.maxWarnings} إنذار • 👥 ${p.approvers}`;
         }).join('\n\n'), COLORS.info);
         return i.reply({ embeds: [e1, e2], ephemeral: true });
@@ -156,7 +158,7 @@ module.exports = {
       // staff.team. الطلب الذي غاب أهلهُ يُعامَل كتغيّر الرتبة: توقفٌ
       // صريح لا سقوط صامت، والسقوط المجدول (٣٠ يوماً) سيطويه بأسببه.
       if (!s) return replyEphemeral(i, '❌ صاحب هذا الطلب ليس في سجل الإداريين — الترقية لا تُنفَّذ بلا صف أهلية.', COLORS.danger);
-      const rule = promo.nextPromotion(s);
+      const rule = promotionRules.ruleFor(s.team, s.rank);
       if (!rule || rule.to !== r.to_rank) return replyEphemeral(i, '❌ رتبة العضو تغيرت منذ الطلب.', COLORS.danger);
       if (i.staffLevel < rule.approvalLevel) return replyEphemeral(i, `❌ هذه الترقية تتطلب موافقة: ${rule.approvers}.`, COLORS.danger);
       if (r.user_id === i.user.id) return replyEphemeral(i, '❌ لا يمكنك ترقية نفسك.', COLORS.danger);

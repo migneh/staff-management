@@ -1,6 +1,6 @@
 'use strict';
 const { SlashCommandBuilder } = require('discord.js');
-const { LEVELS, TEAMS, STATUS, POINTS_THRESHOLDS } = require('../constants');
+const { LEVELS, TEAMS, STATUS } = require('../constants');
 const settings = require('../services/settings');
 const staffService = require('../services/staff');
 const promotions = require('../services/promotions');
@@ -58,12 +58,11 @@ module.exports = {
           return `${statusIcon} **${check.label}**: ${actualValue} / ${check.required} ${checkBar}`;
         }).join('\n');
         
-        // عتبة النقاط الفهنية: العتبة الانتقالية المخفَّضة خلال نافذة 60 يوماً
-        // — نفس البوابة نفسها في services/promotions و/my-points، لا القيمة
-        // الخام القادمة بعد انتهاء النافذة — وإلا لرأى عضوٌ يعدّو فوق
-        // عتبة اليوم الفعلية بطاقة تقول «نقاطك لم تكتمل».
+        // العتبة من قاعدة التقييم نفسها (promoEval.rule) — تجاوز السياسة يظهر هنا حياً،
+        // وتظل العتبة الانتقالية المخفَّضة خلال نافذة 60 يوماً كي لا يرى عضوٌ
+        // يعدّو فوق عتبة اليوم الفعلية بطاقة تقول «نقاطك لم تكتمل».
         const totalPoints = points.getBalance(userId);
-        const baseThreshold = POINTS_THRESHOLDS[member.team]?.[member.rank] ?? null;
+        const baseThreshold = rule.pointsThreshold ?? null;
         const effThreshold = baseThreshold != null
           ? promotions.effectivePointsThreshold(baseThreshold, clock.today())
           : null;

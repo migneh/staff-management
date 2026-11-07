@@ -1,8 +1,9 @@
 'use strict';
 const { SlashCommandBuilder } = require('discord.js');
-const { LEVELS, POINTS_THRESHOLDS } = require('../constants');
+const { LEVELS } = require('../constants');
 const settings = require('../services/settings');
 const points = require('../services/points');
+const promotionRules = require('../services/promotionRules');
 const { POINTS_TRANSITION_DAYS, effectivePointsThreshold } = require('../services/promotions');
 const staffService = require('../services/staff');
 const clock = require('../clock');
@@ -93,9 +94,9 @@ module.exports = {
         const userPoints = points.getBalance(userId);
         const freezeState = points.isFrozen(userId);
 
-        // إلى العتبة: إن كانت لرتبته عتبة نُبني بند التقدم — الوتيرة من آخر
+        // إلى العتبة: تُقرأ من طبقة القواعد (تجاوز السياسة حيّ فوراً) — الوتيرة من آخر
         // 4 أسابيع داخل العصر الحالي (تقدير لا وعد: وعدٌ «بتاريخ» يكذب).
-        const base = POINTS_THRESHOLDS[member.team]?.[member.rank];
+        const base = promotionRules.ruleFor(member.team, member.rank)?.pointsThreshold ?? null;
         let progress = null;
         if (base != null) {
           const eff = effectivePointsThreshold(base, clock.today());

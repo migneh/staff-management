@@ -8,6 +8,7 @@ const staffService = require('../services/staff');
 const taskService = require('../services/tasks');
 const points = require('../services/points');
 const { getDb } = require('../database');
+const promotionRules = require('../services/promotionRules');
 const { embed, COLORS, replyEphemeral, progressBar } = require('../utils');
 const kit = require('../ui/kit');
 
@@ -123,7 +124,7 @@ function performanceEmbed(data, days = 30) {
   // Weekly reports supply the balance from their batch query; other callers read it directly.
   const totalPoints = data?.points ?? points.getBalance(staff.user_id);
   const currentRank = staff.rank;
-  const pointsThreshold = require('../constants').POINTS_THRESHOLDS[staff.team]?.[staff.rank] || 0;
+  const pointsThreshold = promotionRules.ruleFor(staff.team, staff.rank)?.pointsThreshold || 0;
 
   // Color based on points progress toward next threshold
   const progressPercent = pointsThreshold > 0 ? Math.min(100, Math.round((totalPoints / pointsThreshold) * 100)) : 0;
