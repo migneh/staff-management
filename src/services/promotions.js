@@ -1,10 +1,12 @@
 'use strict';
 const { getDb } = require('../database');
-const { SUPPORT_PROMOTIONS, MOD_PROMOTIONS, PROBATION, POINTS_THRESHOLDS } = require('../constants');
+const { SUPPORT_PROMOTIONS, MOD_PROMOTIONS, PROBATION } = require('../constants');
 const clock = require('../clock');
 const points = require('./points');
 const reports = require('./reports');
 const settings = require('./settings');
+const promotionRules = require('./promotionRules');
+const score = require('./score');
 
 /** الحد الأدنى لنسبة التكتات المُقيَّمة قبل الاعتماد على المتوسط */
 const MIN_RATED_SHARE = PROBATION.minRatedShare;
@@ -95,7 +97,7 @@ function safeJson(text) {
  *
  * الصيغة الفاعلة تحمل `points`. الصيغة القديمة تحمل `score` — وهي غير
  * صالحة للنقاط الجديدة ولا تُترجَم صامتاً (لا استنتاج مضمر من رصيد قديم)،
- * بل تُعلَم explicitاً كي يميّز التقرير «لا تقرير» عن «تقرير قديم الصيغة».
+ * بل يُعلَم بوضوح كي يميّز التقرير «لا تقرير» عن «تقرير قديم الصيغة».
  * @returns {{value:number, legacy:false}|{value:null, legacy:true}|null}
  */
 function memberPoints(parsed, userId) {
@@ -169,7 +171,9 @@ function stability(userId, months, minPoints, team) {
  * يجعل الشرط الفعلي أضعف من المعلن للفريق.
  */
 function evaluate(staff) {
-  const rule = nextPromotion(staff);
+  // القاعدة من طبقة القواعد: ثوابت الرتبة + تجاوز السياسة (عتبات/نوافذ)
+  // فيرى التعديل الحيّ فوراً — nextPromotion يبقى كأداة عرض لمستهلكي المعاينة.
+  const rule = promotionRules.ruleFor(staff.team, staff.rank);
   if (!rule) return {
     rule: null, eligible: false, checks: [], points: points.getBalance(staff.user_id), rank: staff.rank,
     reason: 'لا توجد ترقية تلقائية لهذه الرتبة (يدوية بقرار Boss)',
@@ -196,35 +200,50 @@ function evaluate(staff) {
 
   ok('مدة الخدمة بالرتبة', months >= rule.months, `${months.toFixed(1)} شهر`, `${rule.months} شهر`);
 
-  // ===== بوابة النقاط (نظام النقاط فقط — قرار المالك) =====
-  // Score أُخرج من أهلية الترقية: بقي أداة تقارير وتقييم لا بوابة. السبب أن
-  // درجة واحدة مركّبة تخفي «هل تقدّم فعلاً؟» خلف متوسط، بينما النقاط دفترٌ
-  // كل سطر فيه سببٌ معلوم — والترقية تُسأل «كم جمعتَ منذ صرت بهذه الرتبة؟».
-  //
-  // الرصيد محسوب على العصر الحالي (rank_epoch): الترقية تصفّره (setRank(newEpoch))،
-  // فالسؤال هنا هو «كم جمعتَ منذ آخر ترقية» لا «كم جمعتَ في تاريخك كله» — وإلا
-  // لترقّى العضو على نقاط رتبة سابقة، وصار الرصيد عدّاداً لا يعود لصفر أبداً.
-  const currentPoints = points.getBalance(staff.user_id);
-  const pointsThreshold = POINTS_THRESHOLDS[staff.team]?.[staff.rank];
-  if (pointsThreshold != null) {
-    // النافذة الانتقالية (D7): عتبة مخفَّضة في أول ستين يوماً من انطلاقة
-    // النظام، معلنة في البوابة نفسها كي لا يضل العضو «عتبتي قلّت» بلا سبب.
-    const eff = effectivePointsThreshold(pointsThreshold, today);
-    ok('نقاط الترقية', currentPoints >= eff.threshold,
-      `${currentPoints}`,
-      eff.transitional
-        ? `${eff.threshold}+ (عتبة انتقالية — الكاملة ${pointsThreshold} بعد ${POINTS_TRANSITION_DAYS - eff.day} يوم)`
-        : `${pointsThreshold}+`);
-  } else {
-    // لا عتبة معرَّفة = لا ترقية تلقائية. تمرير البوابة لغياب عتبتها يمنح
-    // ترقيةً بلا شرط نقاط — وهو عكس قرار «النقاط فقط». فتسقط بصريح لا صامت:
-    // الإداري يرى «ترقية يدوية» فيقرر، بدل أن يُرقّى على بوابة مفقودة.
-    ok('نقاط الترقية', false,
-      `${currentPoints}`, 'لا عتبة معرَّفة — ترقية يدوية');
-  }
-
-  // الحصول على البيانات الخام للنافذة (بديل عن score.monthlyRaw)
+  // البيانات الخام للنافذة (بديل عن score.monthlyRaw): بها بوابة الدرجة
+  // وأبواب الرسائل/التقييم/السرعة، فتُروى مرة واحدة لا مرة لكل بوابة.
   const raw = reports.getRaw(staff.user_id, windowDays) || {};
+
+  // ===== بوابات النقاط/الدرجة (نمط قابل للضبط — الافتراضي points لنظام النقاط) =====
+  // النمط points يكرر الخط القائم حرفياً (لا تغيير سلوك لبوت حيّ). النمط score
+  // يستبدل البوابة بالدرجة المركّبة من score.js وعتبة الرتبة، والنمط both
+  // يجمعهما بمنطق all/any من السياسة. الرصيد محسوب على العصر الحالي
+  // (rank_epoch): الترقية تصفّره (setRank(newEpoch))، فالسؤال هو «كم جمعتَ
+  // منذ آخر ترقية» لا «كم جمعتَ في تاريخك كله» — وإلا لترقّى العضو على نقاط
+  // رتبة سابقة، وصار الرصيد عدّاداً لا يعود لصفر أبداً.
+  const POINTS_GATE = 'نقاط الترقية';
+  const SCORE_GATE = 'درجة الأداء';
+  const mode = promotionRules.getMode();
+  const gateLabels = new Set();
+  const currentPoints = points.getBalance(staff.user_id);
+  if (mode === 'points' || mode === 'both') {
+    const pointsThreshold = rule.pointsThreshold;
+    if (pointsThreshold != null) {
+      // النافذة الانتقالية (D7): عتبة مخفَّضة في أول ستين يوماً من انطلاقة
+      // النظام، معلنة في البوابة نفسها كي لا يضل العضو «عتبتي قلّت» بلا سبب.
+      const eff = effectivePointsThreshold(pointsThreshold, today);
+      gateLabels.add(POINTS_GATE);
+      ok(POINTS_GATE, currentPoints >= eff.threshold,
+        `${currentPoints}`,
+        eff.transitional
+          ? `${eff.threshold}+ (عتبة انتقالية — الكاملة ${pointsThreshold} بعد ${POINTS_TRANSITION_DAYS - eff.day} يوم)`
+          : `${pointsThreshold}+`);
+    } else {
+      // لا عتبة معرَّفة = لا ترقية تلقائية. تمرير البوابة لغياب عتبتها يمنح
+      // ترقيةً بلا شرط نقاط — وهو عكس قرار «النقاط فقط». فتسقط بصريح لا صامت:
+      // الإداري يرى «ترقية يدوية» فيقرر، بدل أن يُرقّى على بوابة مفقودة.
+      gateLabels.add(POINTS_GATE);
+      ok(POINTS_GATE, false,
+        `${currentPoints}`, 'لا عتبة معرَّفة — ترقية يدوية');
+    }
+  }
+  if (mode === 'score' || mode === 'both') {
+    // الدرجة من نفس النافذة التي تقيس بها بقية البوابات (raw أعلاه)،
+    // والمقصود عتبة الرتبة (scoreThreshold) القابلة للتجاوز من السياسة.
+    const sc = score.computeScore(raw, staff, { windowDays });
+    gateLabels.add(SCORE_GATE);
+    ok(SCORE_GATE, sc.score >= rule.scoreThreshold, `${sc.score}`, `${rule.scoreThreshold}+`);
+  }
 
   if (staff.team === 'support') {
     // الرسائل في قنوات العمل (المخلفات) خلال النافذة
@@ -318,8 +337,17 @@ function evaluate(staff) {
 
   ok('الحالة', staff.status === 'active' || staff.status === 'probation', staff.status, 'active');
 
+  // الأهلية: في نمط both بمنطق any تكفي إحدى البوابتين مع سلامة بقيّة
+  // الشروط؛ وفي مناطِق points وscore وboth-إن-كان-المنطق-all (والافتراضي)
+  // لزامٌ تمرير كل شرط.
+  const anyGate = mode === 'both' && promotionRules.getBothLogic() === 'any';
+  const eligible = anyGate
+    ? checks.filter(c => !gateLabels.has(c.label)).every(c => c.pass)
+      && checks.filter(c => gateLabels.has(c.label)).some(c => c.pass)
+    : checks.every(c => c.pass);
+
   return {
-    rule, eligible: checks.every(c => c.pass), checks, months, windowDays, warnWindowDays,
+    rule, eligible, checks, months, windowDays, warnWindowDays, mode,
     points: currentPoints, rank: staff.rank, raw,
   };
 }
