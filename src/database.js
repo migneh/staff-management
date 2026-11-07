@@ -1060,10 +1060,26 @@ function migrate(database) {
     // الفريد مقصور على الصفوف ذات المرجع: مرجع واحد لا يُمنح مرتين (تكتة
     // مغلقة، تقييم، جائزة أسبوع). أما الصفوف بلا مرجع — الحضور اليومي مثلًا —
     // فمتكررة بطبيعتها، وفريدتها الوهمية ترفض الصف الثاني المشروع.
-    database.exec(`
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_points_unique_ref
-        ON promotion_points(reason_key, ref_type, ref_id) WHERE ref_id IS NOT NULL
-    `);
+    //
+    // حارس ترتيب الإقلاع: migrate() يعيد تشغيل جميع الخطوات كل إقلاع، وهذه
+    // الخطوة نفسها تعيد إنشاء الفهرس ثلاثي الأعمدة IF NOT EXISTS — والمشكلة
+    // أن IF NOT EXISTS معتمد على الاسم فقط: لو أُلقي الفهرس في الخطوة
+    // points_unique_ref_per_user (أدنى) تبنيه SQLite من جديد فوق البيانات الحية.
+    // والفهرس الجديد المقيد بالعضو عمداً يسمح بمرجع واحد مشترك بين أعضاء —
+    // جوائز المشتركة كنجم الأسبوع: الجائز والوصيفان يحصلان على نفس
+    // (reason_key='star_week', ref_type='week', ref_id=بداية الأسبوع) في
+    // src/scheduler.js — ومع قاعدة مليئة بذلك تصطدم عملية البناء بـ
+    // UNIQUE constraint failed ويموت الإقلاع في كل مرة. فالشرط: أنشئ الفهرس
+    // القديم فقط قبل أن يكتسب المخطط الفهرس المقيد بالعضو؛ قاعدة جديدة تحصل
+    // عليه مبكراً في نفس مسار الترحيل، وقاعدة وصلت إلى الفهرس المقيد بالعضو
+    // لا تعود إلى الفهرس القديم أبداً.
+    const perUserIndexReady = database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_points_unique_user_ref'").get();
+    if (!perUserIndexReady) {
+      database.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_points_unique_ref
+          ON promotion_points(reason_key, ref_type, ref_id) WHERE ref_id IS NOT NULL
+      `);
+    }
     database.exec(`CREATE INDEX IF NOT EXISTS idx_points_user_epoch ON promotion_points(user_id, rank_epoch)`);
     database.exec(`CREATE INDEX IF NOT EXISTS idx_points_created ON promotion_points(created_at)`);
     // عصر كل عضو يبدأ من 0: لا يوجد عصر سالب، والقيمة الافتراضية تكفي لقاعدة
