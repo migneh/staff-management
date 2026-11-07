@@ -4,8 +4,9 @@ const {
   SlashCommandBuilder, StringSelectMenuBuilder, UserSelectMenuBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, RoleSelectMenuBuilder, ChannelSelectMenuBuilder,
   ChannelType, PermissionFlagsBits,
 } = require('discord.js');
-const { LEVELS, SUPPORT_RANKS, MOD_RANKS, GENERAL_MANAGEMENT_RANKS, SYSTEM_ROLES, TEAMS, LEAVE_TYPES, CHANNEL_META } = require('../constants');
+const { LEVELS, SUPPORT_RANKS, MOD_RANKS, GENERAL_MANAGEMENT_RANKS, SYSTEM_ROLES, TEAMS, LEAVE_TYPES, CHANNEL_META, POINTS_THRESHOLDS } = require('../constants');
 const settings = require('../services/settings');
+const rules = require('../services/promotionRules');
 const staffSync = require('../services/staffSync');
 const staffService = require('../services/staff');
 const { arDigits } = require('../utils');
@@ -51,6 +52,7 @@ function homePage() {
     { label: 'الإداريون', value: 'staff', emoji: '👥', description: 'تسجيل دفعة واحدة من رتب ديسكورد وحالة كل فريق' },
     { label: 'صلاحية Server Manager', value: 'governance', emoji: '👑' },
     { label: 'سياسات الإجازات والاستقالة', value: 'policies', emoji: '📋', description: 'الحدود والمواعيد ووقت تفعيل رتبة الإجازة' },
+    { label: 'بوابات الترقيات', value: 'promotions', emoji: '🪜', description: 'نمط البوابة ومنطق الدمج وقواعد كل رتبة' },
   );
   return { embeds: [e], components: [
     new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(next.id).setLabel(next.label).setStyle(ButtonStyle.Primary)),
@@ -212,6 +214,156 @@ function staffPage() {
   ] };
 }
 
+// ===== بوابات الترقيات =====
+// كل الأرقام تمر عبر طبقة القواعد (promotionRules) — لا كتابة مباشرة في
+// الإعدادات هنا، فالتحقق من الحدود والسجل تُداره الطبقة في موضع واحد.
+// فارغ في أي حقل يبقي قيمته؛ التحديد الصريح وحده التجاوز المقبول.
+const PROMO_FIELD_LABELS = {
+  months: 'المدة بالأشهر',
+  pointsThreshold: 'عتبة النقاط',
+  scoreThreshold: 'عتبة درجة الأداء',
+  approvals: 'عدد الموافقات',
+  maxWarnings: 'سقف المخالفات',
+  rating: 'متوسط التقييم',
+  minMessages: 'أدنى رسائل التكت',
+  minActiveDays: 'أدنى أيام النشاط',
+  windowDays: 'نافذة الرتبة',
+  actions: 'أدنى الإجراءات الإشرافية',
+};
+const PROMO_COMMON_IDS = ['months', 'pointsThreshold', 'scoreThreshold', 'approvals', 'maxWarnings'];
+const PROMO_FIELD_HINTS = {
+  months: 'عدد الأشهر المطلوبة في الرتبة الحالية.',
+  pointsThreshold: 'النقاط المطلوبة في البوابة النقاطية.',
+  scoreThreshold: 'درجة الأداء المركّبة المطلوبة من 100.',
+  approvals: 'عدد الموافقات المطلوبة لفتح الباب.',
+  maxWarnings: 'أقصى مخالفات مقبولة في نافذة الرتبة.',
+  rating: 'متوسط نجوم العملاء المطلوب.',
+  minMessages: 'أقل عدد رسائل مطلوب في نافذة الرتبة.',
+  minActiveDays: 'أقل عدد أيام نشاط.',
+  windowDays: 'نافذة تقييم الرتبة بالأيام.',
+  actions: 'أقل عدد إجراءات إشرافية مطلوب.',
+};
+const PROMO_TEAM_IDS = {
+  support: ['rating', 'minMessages', 'minActiveDays', 'windowDays'],
+  moderation: ['actions', 'minActiveDays', 'windowDays'],
+};
+
+function promoPaths() {
+  return Object.entries(rules.RULE_SOURCES).flatMap(([team, list]) => list.map(r => {
+    const rule = rules.ruleFor(team, r.from);
+    return {
+      team, from: r.from, to: r.to,
+      override: settings.policy(`promotion.rule.${team}.${r.from}`, null) != null,
+      pts: rule.pointsThreshold, months: rule.months, approvals: rule.approvals,
+    };
+  }));
+}
+
+/** بند قاعدة بمفتاحه: القيمة بين يديك، والأساس بين قوسين إن خالفه التجاوز. */
+function ruleChip(key, cur, base) {
+  const shown = cur == null ? 'غير محدد' : arDigits(cur);
+  const extra = cur != null && base != null && cur !== base ? ` (أساس: ${arDigits(base)})` : '';
+  return `${PROMO_FIELD_LABELS[key]}: **${shown}**${extra}`;
+}
+
+function promotionsPage() {
+  const mode = rules.getMode();
+  const logic = rules.getBothLogic();
+  const modeLabels = { points: 'النقاط', score: 'درجة الأداء', both: 'الاثنان معاً' };
+  const logicLabels = { all: 'كل الشروط معاً', any: 'يكفي شرط واحد' };
+  const e = embed('🪜 بوابات الترقيات', [
+    `**نمط البوابة:** ${modeLabels[mode]}${mode === 'both' ? ` — منطق الدمج: ${logicLabels[logic]}` : ''}`,
+    mode === 'points' ? 'الافتراضي: البوابة النقاطية وحدها هي التي تفتح للإرسال.'
+      : mode === 'score' ? 'درجة الأداء المركّبة وحدها تحدد الإرسال إلى المراجعة.'
+        : `الشرطان معاً: ${logic === 'all' ? 'يجب أن يمر كلٌّ من العتبة والدرجة.' : 'يكفي أن يمر أحدهما.'}`,
+    '',
+    '**مسارات الترقية — اختر المسار لضبط قاعدته:**',
+    ...promoPaths().map(p => `${p.override ? '✳️' : '•'} **${p.from} → ${p.to}** — ${p.pts == null ? 'بدون عتبة نقاط' : `عتبة ${arDigits(p.pts)} نقطة`} • ${arDigits(p.months)} أشهر • ${arDigits(p.approvals)} موافقة`),
+    '',
+    '✳️ مسار تحتها تجاوز مفعّل. تُطبق التعديلات فوراً على التقييم الجديد بلا إعادة تشغيل.',
+  ].join('\n'), COLORS.info);
+  const modeSelect = new StringSelectMenuBuilder().setCustomId('setup:promomode').setPlaceholder('نمط بوابة الترقية…').addOptions(
+    { label: 'النقاط فقط (الافتراضي)', value: 'points', description: 'البوابة النقاطية وحدها — السلوك الحالي', default: mode === 'points' },
+    { label: 'درجة الأداء فقط', value: 'score', description: 'درجة الأداء المركّبة وحدها', default: mode === 'score' },
+    { label: 'الاثنان معاً', value: 'both', description: 'يعمل مع منطق الدمج من القائمة التالية', default: mode === 'both' },
+  );
+  const logicSelect = new StringSelectMenuBuilder().setCustomId('setup:promologic').setPlaceholder('منطق الدمج في نمط «الاثنان معاً»…').addOptions(
+    { label: 'كل الشروط معاً', value: 'all', description: 'لا إرسال إلا إذا مرت العتبة والدرجة معاً', default: logic === 'all' },
+    { label: 'يكفي شرط واحد', value: 'any', description: 'تفتح البوابة بمرور أحدهما', default: logic === 'any' },
+  );
+  const pathSelect = new StringSelectMenuBuilder().setCustomId('setup:promorule').setPlaceholder('اختر مسار ترقية لضبط قاعدته…').addOptions(
+    promoPaths().map(p => ({ label: `${p.from} → ${p.to}`, value: `${p.team}:${p.from}`, description: p.team === 'support' ? 'فريق الدعم' : 'فريق الإشراف' })),
+  );
+  return { embeds: [e], components: [
+    new ActionRowBuilder().addComponents(modeSelect),
+    new ActionRowBuilder().addComponents(logicSelect),
+    new ActionRowBuilder().addComponents(pathSelect),
+    new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('setup:home').setLabel('الرئيسية').setEmoji('🏠').setStyle(ButtonStyle.Secondary)),
+  ] };
+}
+
+function promoRulePage(team, fromRank) {
+  if (!rules.hasAscensionPath(team, fromRank)) return promotionsPage();
+  const rule = rules.ruleFor(team, fromRank);
+  const base = rules.baseRule(team, fromRank);
+  const override = settings.policy(`promotion.rule.${team}.${fromRank}`, null);
+  const bases = {
+    ...base,
+    pointsThreshold: POINTS_THRESHOLDS[team]?.[fromRank] ?? null,
+    scoreThreshold: rules.DEFAULT_SCORE_THRESHOLD,
+  };
+  const e = embed(`🪜 قاعدة الترقية — ${fromRank} → ${rule.to}`, [
+    override ? '✳️ هذه القاعدة من تجاوز حيّ — زر «استعادة الثوابت» يعيدها.' : '• هذه القاعدة من الثوابت، لا تجاوز مفعّل عليها.',
+    '',
+    ...PROMO_COMMON_IDS.map(id => ruleChip(id, rule[id], bases[id])),
+    ...PROMO_TEAM_IDS[team].map(id => ruleChip(id, rule[id], base[id] ?? null)),
+    '',
+    'حسب النمط: عتبة النقاط تمس نمط النقاط، وعتبة الدرجة تمس نمط الدرجة، ونمط both يقرأ حسب منطق الدمج.',
+    'الأزرار تفتح نافذتي تعديل — ترك الحقل فارغاً يبقي قيمته.',
+  ].join('\n'), COLORS.info);
+  const btn = (id, label, style, disabled) => new ButtonBuilder().setCustomId(id).setLabel(label).setStyle(style).setDisabled(!!disabled);
+  return { embeds: [e], components: [
+    new ActionRowBuilder().addComponents(
+      btn(`setup:promobase:${team}:${fromRank}`, 'الأرقام المشتركة', ButtonStyle.Primary),
+      btn(`setup:promoteam:${team}:${fromRank}`, 'شروط الفريق', ButtonStyle.Secondary),
+      btn(`setup:promoreset:${team}:${fromRank}`, 'استعادة الثوابت', ButtonStyle.Danger, !override),
+    ),
+    new ActionRowBuilder().addComponents(
+      btn('setup:promotions', 'كل البوابات', ButtonStyle.Secondary),
+      btn('setup:home', 'الرئيسية', ButtonStyle.Secondary),
+    ),
+  ] };
+}
+
+/** إرسال نموذج قاعدة: الفراغ يُترك، والرقم الصالح يُكتب عبر طبقة القواعد فبلا كتابة جزئية. */
+async function saveRulesetFields(i, team, fromRank, ids) {
+  if (!rules.hasAscensionPath(team, fromRank)) return replyEphemeral(i, 'لا مسار ترقية تلقائي لهذه الرتبة.', COLORS.warning);
+  const before = rules.ruleFor(team, fromRank);
+  const partial = {};
+  const errors = [];
+  for (const id of ids) {
+    const raw = forms.value(i, id);
+    if (!String(raw || '').trim()) continue; // فراغ = إبقاء القيمة
+    const n = Number(normalizeDigits(String(raw)).replace(/٫/g, '.').trim());
+    const bound = rules.BOUNDS[id];
+    const label = PROMO_FIELD_LABELS[id];
+    if (!Number.isFinite(n)) { errors.push(`«${label}»: القيمة ليست رقماً`); continue; }
+    if (bound.integer && !Number.isInteger(n)) { errors.push(`«${label}»: يجب أن تكون عدداً صحيحاً`); continue; }
+    if (n < bound.min || n > bound.max) { errors.push(`«${label}»: خارج الحدود ${arDigits(bound.min)}–${arDigits(bound.max)}`); continue; }
+    partial[id] = n;
+  }
+  if (errors.length) return replyEphemeral(i, `لم يُحفظ شيئاً. ${errors.join(' • ')}`, COLORS.danger);
+  if (!Object.keys(partial).length) return replyEphemeral(i, 'لم تُرسل قيماً جديدة — اترك الحقل فارغاً للحفاظ على القيم الحالية.', COLORS.info);
+  const res = rules.setRule(team, fromRank, partial, i.user.id);
+  if (!res.ok) return replyEphemeral(i, `لم يُحفظ شيئاً. ${res.errors.join(' • ')}`, COLORS.danger);
+  const summary = embed('✅ تم حفظ قاعدة الترقية',
+    Object.entries(partial).map(([id, n]) => `«${PROMO_FIELD_LABELS[id]}»: ${before[id] == null ? 'غير محدد' : arDigits(before[id])} → ${arDigits(n)}`).join('\n'),
+    COLORS.success);
+  await i.reply({ embeds: [summary], ephemeral: true });
+  try { await i.message?.edit?.(promoRulePage(team, fromRank)); } catch { /* الرسالة الأصلية قد تكون قديمة */ }
+  return null;
+}
+
 // ===== نماذج السياسات =====
 const modals = {
   advancedLeave: () => {
@@ -267,6 +419,35 @@ const modals = {
     ],
     note: 'الطلب الأقل من الإشعار لا يُرفض تلقائياً، بل يصل للـ Boss مع تحذير واضح.',
   }),
+  // نماذج قواعد الترقية: التعبئة المسبقة من القاعدة المركّبة، والفراغ يعني الإبقاء.
+  // المعاملات الناقصة تُرجع قيماً فارغة بدل الانفجار — بنّاءُ الفحص في modals.test
+  // يستدعي كل باني بلا معاملات، والمواصفة الناتجة تبقى ضمن حدود ديسكورد.
+  promoBase: (team, fromRank) => {
+    const r = rules.ruleFor(team, fromRank) || {};
+    return {
+      id: 'setup:promobase-modal',
+      title: '🪜 القاعدة المشتركة للترقية',
+      fields: PROMO_COMMON_IDS.map(id => forms.field({
+        id, label: PROMO_FIELD_LABELS[id], required: false,
+        max: id === 'pointsThreshold' ? 5 : 3, value: r[id] == null ? '' : String(r[id]),
+        description: `${rules.BOUNDS[id].min}-${rules.BOUNDS[id].max}: ${PROMO_FIELD_HINTS[id]} فارغ = إبقاء القيمة.`,
+      })),
+    };
+  },
+  promoTeam: (team, fromRank) => {
+    const r = rules.ruleFor(team, fromRank) || {};
+    const ids = PROMO_TEAM_IDS[team] || ['minActiveDays', 'windowDays'];
+    return {
+      id: 'setup:promoteam-modal',
+      title: `🪜 شروط الفريق — ${team === 'support' ? 'الدعم' : 'الإشراف'}`,
+      fields: ids.map(id => forms.field({
+        id, label: PROMO_FIELD_LABELS[id], required: false, max: 6,
+        value: r[id] == null ? '' : String(r[id]),
+        description: `${rules.BOUNDS[id].min}-${rules.BOUNDS[id].max}: ${PROMO_FIELD_HINTS[id]} فارغ = إبقاء القيمة.`,
+      })),
+      note: 'تُحفظ القيم فوراً على المسار المختار فقط. ترك الحقل فارغاً يبقي قيمته السابقة كما هي.',
+    };
+  },
 };
 
 // ===== إعداد رتبة Server Manager =====
@@ -353,6 +534,7 @@ module.exports = {
         general_management: () => rolesPage('general_management', 0), system: () => rolesPage('system', 0),
         channels: () => channelsPage(0), activity: activityPage, tickets: ticketSourcePage,
         governance: governancePage, policies: policiesPage, ratings: ratingsPage, staff: staffPage,
+        promotions: promotionsPage,
       };
       const key = i.values[0];
       return i.update(Object.hasOwn(pages, key) ? pages[key]() : homePage());
@@ -440,6 +622,38 @@ module.exports = {
     'setup:policies-reset': async (i) => {
       for (const k of ['leaveMaxConcurrent', 'leaveMaxDays', 'leaveMaxDaysPer90', 'leavePendingExpireDays', 'resignationNoticeDays', 'resignationEscalateDays', 'vacationRoleTiming', 'leaveAnnualDays', 'leaveTeamCover', 'leavePendingEscalateHours', 'leaveWorkdayCounting', 'leaveWeeklyOff', 'leaveEnforceTeamCover']) settings.resetPolicy(k);
       return i.update(policiesPage());
+    },
+
+    // ===== بوابات الترقيات =====
+    'setup:promotions': async (i) => i.update(promotionsPage()),
+    'setup:promomode': async (i) => {
+      const res = rules.setMode(i.values[0], i.user.id);
+      if (!res.ok) return replyEphemeral(i, res.errors.join(' • '), COLORS.warning);
+      return i.update(promotionsPage());
+    },
+    'setup:promologic': async (i) => {
+      const res = rules.setBothLogic(i.values[0], i.user.id);
+      if (!res.ok) return replyEphemeral(i, res.errors.join(' • '), COLORS.warning);
+      return i.update(promotionsPage());
+    },
+    'setup:promorule': async (i) => {
+      // القيمة مسار مركّب `team:fromRank` — أسماء الرتب بلا نقطتين، فتنضم بـ join(':')
+      const [team, ...rank] = String(i.values[0]).split(':');
+      return i.update(promoRulePage(team, rank.join(':')));
+    },
+    'setup:promobase': async (i, [team, ...rank]) => {
+      return forms.open(i, modals.promoBase(team, rank.join(':')));
+    },
+    'setup:promoteam': async (i, [team, ...rank]) => {
+      return forms.open(i, modals.promoTeam(team, rank.join(':')));
+    },
+    'setup:promobase-modal': async (i, [team, ...rank]) => saveRulesetFields(i, team, rank.join(':'), PROMO_COMMON_IDS),
+    'setup:promoteam-modal': async (i, [team, ...rank]) => saveRulesetFields(i, team, rank.join(':'), PROMO_TEAM_IDS[team] || []),
+    'setup:promoreset': async (i, [team, ...rank]) => {
+      const fromRank = rank.join(':');
+      const res = rules.resetRule(team, fromRank, i.user.id);
+      if (!res.ok) return replyEphemeral(i, res.errors.join(' • '), COLORS.danger);
+      return i.update(promoRulePage(team, fromRank));
     },
 
     'setup:pickrole': async (i, [team, idx]) => {

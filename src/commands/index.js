@@ -89,6 +89,15 @@ const COMPONENT_ACCESS = {
   'setup:policies-edit-resign': { adminOnly: true },
   'setup:policies-resign-modal': { adminOnly: true },
   'setup:policies-reset': { adminOnly: true },
+  'setup:promotions': { adminOnly: true },
+  'setup:promomode': { adminOnly: true },
+  'setup:promologic': { adminOnly: true },
+  'setup:promorule': { adminOnly: true },
+  'setup:promobase': { adminOnly: true },
+  'setup:promoteam': { adminOnly: true },
+  'setup:promoreset': { adminOnly: true },
+  'setup:promobase-modal': { adminOnly: true },
+  'setup:promoteam-modal': { adminOnly: true },
 
   // ===== قاعدة المعرفة: القراءة للجميع، الإدارة العليا فقط =====
   'faq:cat': { level: LEVELS.STAFF },
