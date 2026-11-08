@@ -99,6 +99,19 @@ test('نموذج القاعدة المشتركة يفتح من زر المسار
   assert.deepEqual(ids, ['months', 'pointsThreshold', 'scoreThreshold', 'approvals', 'maxWarnings']);
 });
 
+test('معاملات المسار تصمد في معرّف النافذة حتى الإرسال (انحدار: نوافذ الترقية كانت تفقد team وfromRank فترفض «لا مسار ترقية تلقائي»)', async () => {
+  for (const [openId, key] of [['setup:promobase', 'setup:promobase-modal'], ['setup:promoteam', 'setup:promoteam-modal']]) {
+    const i = interaction();
+    await resolveComponent(openId).handler(i, ['moderation', 'Head Of Moderators']);
+    const modalId = i.modal.toJSON().custom_id;
+    assert.match(modalId, new RegExp(`^${key}:moderation:Head Of Moderators:form:[a-f0-9]{16}$`),
+      'team وfromRank داخل المعرّف قبل توكن الجلسة — forms.open يخزّنه originalId فيبقى عند الإرسال');
+    const route = resolveComponent(`${key}:moderation:Head Of Moderators`);
+    assert.ok(route, 'الإرسال الحقيقي يحلّ المعرّف الأصلي وما الحق يبقى الحد');
+    assert.deepEqual(route.args, ['moderation', 'Head Of Moderators'], 'المعاملات تصل كما فتحت بلا توكن ولا خسارة');
+  }
+});
+
 test('إرسال القاعدة المشتركة: تجاوز عتبة النقاط يُحفظ حيّاً ثم يعود بالزر', async () => {
   await resolveComponent('setup:promobase-modal').handler(
     interaction({ texts: { pointsThreshold: '700' } }), ['moderation', 'Moderator']);

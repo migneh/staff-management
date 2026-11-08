@@ -642,10 +642,17 @@ module.exports = {
       return i.update(promoRulePage(team, rank.join(':')));
     },
     'setup:promobase': async (i, [team, ...rank]) => {
-      return forms.open(i, modals.promoBase(team, rank.join(':')));
+      // الحفرة الجوهرية: forms.open يخزّن originalId من معرّف النافذة نفسها،
+      // فلو بقي المعرّف الثابت "setup:promobase-modal" هبطت المعاملات فالتقديم
+      // يصل بلا team/fromRank فيرد «لا مسار ترقية تلقائي». تضمين المعاملات في
+      // المعرّف يجعلها تصل عبر resolveComponent (وكما صفحة القاعدة تبني أزرارها).
+      // أسماء الرتب بلا نقطتين فتضمينها آمن (كتعليق setup:promorule).
+      const fromRank = rank.join(':');
+      return forms.open(i, { ...modals.promoBase(team, fromRank), id: `setup:promobase-modal:${team}:${fromRank}` });
     },
     'setup:promoteam': async (i, [team, ...rank]) => {
-      return forms.open(i, modals.promoTeam(team, rank.join(':')));
+      const fromRank = rank.join(':');
+      return forms.open(i, { ...modals.promoTeam(team, fromRank), id: `setup:promoteam-modal:${team}:${fromRank}` });
     },
     'setup:promobase-modal': async (i, [team, ...rank]) => saveRulesetFields(i, team, rank.join(':'), PROMO_COMMON_IDS),
     'setup:promoteam-modal': async (i, [team, ...rank]) => saveRulesetFields(i, team, rank.join(':'), PROMO_TEAM_IDS[team] || []),
