@@ -141,7 +141,7 @@ async function runQuickAction(i, name, value) {
     if (value === undefined) {
       const select = new StringSelectMenuBuilder().setCustomId(`nav:choice:${name}`).setPlaceholder(option.description)
         .addOptions(option.choices.map(c => ({ label: c.name, value: c.value })));
-      return i.reply({ embeds: [embed(QUICK_ACTIONS[name], 'الخطوة ١ من ٢: اختر النوع.\nالخطوة ٢: أكمل النموذج وراجعه قبل الإرسال.\nلم يتم إرسال أي طلب بعد.')], components: [new ActionRowBuilder().addComponents(select), homeRow()], ephemeral: true });
+      return i.reply({ embeds: [embed(QUICK_ACTIONS[name], 'الخطوة 1 من 2: اختر النوع.\nالخطوة 2: أكمل النموذج وراجعه قبل الإرسال.\nلم يتم إرسال أي طلب بعد.')], components: [new ActionRowBuilder().addComponents(select), homeRow()], ephemeral: true });
     }
     if (!option.choices.some(c => c.value === value)) return replyEphemeral(i, 'الخيار غير صالح. افتح الإجراء من الدليل مجدداً.', COLORS.warning);
     options = [{ name: option.name, type: option.type, value }];

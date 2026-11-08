@@ -28,7 +28,7 @@ function payload(userId, days = 30) {
         const count = s.distribution.find(r => r.stars === stars)?.count || 0;
         return `**${stars} ⭐** ${progressBar(count, s.count, 8)} ${count}`;
       }).join('\n'), inline: false },
-      { name: '🕒 أحدث ٥ تقييمات', value: s.recent.map(r => `${'⭐'.repeat(r.stars)} • <@${r.reviewer_id}> • ${tsRelative(r.rated_at)}\n[فتح رسالة التقييم](${ratings.sourceUrl(r)})`).join('\n\n'), inline: false },
+      { name: '🕒 أحدث 5 تقييمات', value: s.recent.map(r => `${'⭐'.repeat(r.stars)} • <@${r.reviewer_id}> • ${tsRelative(r.rated_at)}\n[فتح رسالة التقييم](${ratings.sourceUrl(r)})`).join('\n\n'), inline: false },
     ],
   });
   const periods = new ActionRowBuilder().addComponents(...[7, 30, 90].map(n => new ButtonBuilder()

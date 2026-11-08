@@ -121,10 +121,10 @@ test('/my-points — بند «إلى العتبة»: عتبة انتقالية �
   const progress = card.fields.find(f => f.name.includes('عتبة'));
   assert.ok(progress, 'حقل «إلى عتبة الترقية» يظهر لرتبة ذات عتبة');
   assert.match(progress.value, /انتقالية/, 'الحالة الانتقالية معلنة صريحاً لا مخفية');
-  assert.match(progress.value, /١٦٦/, 'عتبة اليوم 166 بأرقام عربية');
+  assert.match(progress.value, /166/, 'عتبة اليوم 166 بأرقام غربية');
   assert.match(progress.value, /نقصك/, 'الفجوة قول لا تخمين');
   assert.match(progress.value, /وتيرتك/, 'الوتيرة من آخر 4 أسابيع ظاهرة');
-  assert.match(progress.value, /٣ أسبوع/, 'وتيرة 25/أسبوع وفجوة 66 → تقدير 3 أسابيع');
+  assert.match(progress.value, /3 أسبوع/, 'وتيرة 25/أسبوع وفجوة 66 → تقدير 3 أسابيع');
   // السقوف المعلنة في ذيل البطاقة — العدالة تحتاج أساساً معروفاً لا مفاجآت
   assert.match(card.footer.text, /تكتات 20\/يوم/, 'سقف التكتات اليومي معلن');
   assert.match(card.footer.text, /شات 5\/يوم/, 'سقف الشات معلن');

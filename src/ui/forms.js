@@ -23,7 +23,7 @@ const HINTS = {
   evidence: 'رابط الرسالة أو الدليل الذي يدعم الإجراء، إن وُجد.',
   exit_interview: 'ملاحظات واضحة ومحايدة لمراجعة الإدارة.',
   ticket_id: 'رقم التكت كما يظهر في سجل البوت؛ لا تستخدم رقم الرسالة.',
-  duration: 'اختياري: دقائق مثل 45، أو ساعات:دقائق مثل 01:30. يقبل ٤٥ أيضاً.',
+  duration: 'اختياري: دقائق مثل 45، أو ساعات:دقائق مثل 01:30. يقبل 45 أيضاً.',
   ids: 'أرقام مفصولة بفاصلة، مثل 3, 7, 12. تُقبل الأرقام العربية والفاصلة العربية.',
   q: 'ابحث بكلمة من العنوان أو المحتوى، مثل «إجازة».',
   query: 'اكتب المهمة بالعربية أو اسم الأمر بالإنجليزية.',
@@ -207,14 +207,14 @@ function modernize(source) {
       hint = `سنة-شهر-يوم مثل ${today()}، أو يوم/شهر/سنة، أو «اليوم» و«غدا».${id === 'remove_at' ? ' فارغ = فور القبول.' : ''}`;
       extra.max = 20;
       extra.placeholder = today();
-    } else if (raw.custom_id.startsWith('setup:policies')) { extra.max = 3; hint = 'عدد صحيح بين 1 و365. تُقبل الأرقام العربية مثل ٣٠.'; }
+    } else if (raw.custom_id.startsWith('setup:policies')) { extra.max = 3; hint = 'عدد صحيح بين 1 و365. تُقبل الأرقام العربية أيضاً.'; }
     modal.addLabelComponents(textLabel({
       id, label: label || old.label, description: hint, required: old.required !== false,
       style: old.style === TextInputStyle.Paragraph ? 'paragraph' : 'short',
       min: old.min_length, max: old.max_length || extra.max, placeholder: old.placeholder || extra.placeholder, value: old.value,
     }));
   }
-  if (raw.components.length < 5) modal.addTextDisplayComponents(new TextDisplayBuilder().setContent('راجع البيانات قبل الإرسال. إغلاق النافذة لا يرسل شيئاً. إذا احتاجت البيانات إلى تصحيح، يمكنك إعادة فتحها لمدة ١٥ دقيقة.'));
+  if (raw.components.length < 5) modal.addTextDisplayComponents(new TextDisplayBuilder().setContent('راجع البيانات قبل الإرسال. إغلاق النافذة لا يرسل شيئاً. إذا احتاجت البيانات إلى تصحيح، يمكنك إعادة فتحها لمدة 15 دقيقة.'));
   return modal;
 }
 

@@ -35,9 +35,9 @@ function homePage() {
   const e = embed('⚙️ إعداد البوت', ready ? '✅ الإعداد الأساسي مكتمل. يمكنك مراجعة أي قسم من القائمة.' : 'لنجهّز البوت خطوة بخطوة. لا تحتاج إلى نسخ أي معرّف.', ready ? COLORS.success : COLORS.primary)
     .addFields(
       { name: 'الخطوة التالية', value: next.hint },
-      { name: '١ · رتب الفريق', value: `${st.rolesDone}/${st.rolesTotal} مرتبطة\n${progressBar(st.rolesDone, st.rolesTotal, 8)}`, inline: true },
-      { name: '٢ · رتبة الإجازة', value: st.vacationRoleConfigured ? '✅ مرتبطة' : '⚪ تحتاج إلى ربط', inline: true },
-      { name: '٣ · القنوات الداخلية', value: `${st.channelsDone}/${st.channelsTotal} مرتبطة\n${progressBar(st.channelsDone, st.channelsTotal, 8)}`, inline: true },
+      { name: '1 · رتب الفريق', value: `${st.rolesDone}/${st.rolesTotal} مرتبطة\n${progressBar(st.rolesDone, st.rolesTotal, 8)}`, inline: true },
+      { name: '2 · رتبة الإجازة', value: st.vacationRoleConfigured ? '✅ مرتبطة' : '⚪ تحتاج إلى ربط', inline: true },
+      { name: '3 · القنوات الداخلية', value: `${st.channelsDone}/${st.channelsTotal} مرتبطة\n${progressBar(st.channelsDone, st.channelsTotal, 8)}`, inline: true },
       { name: 'إعدادات إضافية', value: `سجل التكتات: **${st.ticketSourceConfigured ? 'مرتبط' : 'غير مربوط'}** • Server Manager: **${st.governanceConfigured ? 'مرتبط' : 'مالك السيرفر فقط، أو General Manager'}**\nقنوات النشاط والسياسات متاحة من القائمة. لا يلزم تعديل السياسات الافتراضية للبدء.` },
     ).setFooter({ text: 'يُحفظ كل تغيير فوراً • يمكنك التوقف والعودة لإكمال الإعداد لاحقاً' });
   const menu = new StringSelectMenuBuilder().setCustomId('setup:section').setPlaceholder('اختر قسماً للمراجعة أو التعديل…').addOptions(
@@ -116,8 +116,8 @@ function ratingsPage() {
   const channelId = settings.channelId('support-rating-logs');
   const botId = settings.policy('ratingBotId');
   const e = embed('⭐ ربط تقييمات الدعم', [
-    '**١. اختر قناة رسائل التقييم.** يجب أن يستطيع البوت رؤيتها وقراءة رسائلها.',
-    '**٢. اختر بوت التقييم (مطلوب الآن).** تركه فارغاً يوقف التتبع تماماً — لا نتقبل رسائل أي بوت كي لا تُحتسب تقييمات مزيَّفة.',
+    '**1. اختر قناة رسائل التقييم.** يجب أن يستطيع البوت رؤيتها وقراءة رسائلها.',
+    '**2. اختر بوت التقييم (مطلوب الآن).** تركه فارغاً يوقف التتبع تماماً — لا نتقبل رسائل أي بوت كي لا تُحتسب تقييمات مزيَّفة.',
     '',
     `القناة: ${channelId ? `<#${channelId}>` : 'غير مربوطة — التتبع متوقف'}`,
     `البوت المسموح: ${botId ? `<@${botId}>` : 'غير محدد — التتبع متوقف حتى تختار البوت'}`,
@@ -126,10 +126,10 @@ function ratingsPage() {
     'تُقرأ الرسائل الجديدة فقط؛ لا يُعاد استيراد تاريخ القناة. الرسالة المكررة لا تُحتسب مرتين. لا يتم الرد في قناة المصدر.',
     'لعرض النتائج: /my-ratings أو /support-ratings. إزالة اختيار القناة توقف التتبع دون حذف البيانات.',
   ].join('\n'), COLORS.info);
-  const channel = new ChannelSelectMenuBuilder().setCustomId('setup:rating-channel').setPlaceholder('١ · اختر قناة التقييمات، أو امسح الاختيار للإيقاف')
+  const channel = new ChannelSelectMenuBuilder().setCustomId('setup:rating-channel').setPlaceholder('1 · اختر قناة التقييمات، أو امسح الاختيار للإيقاف')
     .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement).setMinValues(0).setMaxValues(1);
   if (channelId) channel.setDefaultChannels(channelId);
-  const bot = new UserSelectMenuBuilder().setCustomId('setup:rating-bot').setPlaceholder('٢ · اختر بوت التقييم فقط (مطلوب)').setMinValues(0).setMaxValues(1);
+  const bot = new UserSelectMenuBuilder().setCustomId('setup:rating-bot').setPlaceholder('2 · اختر بوت التقييم فقط (مطلوب)').setMinValues(0).setMaxValues(1);
   if (botId) bot.setDefaultUsers(botId);
   return { embeds: [e], components: [new ActionRowBuilder().addComponents(channel), new ActionRowBuilder().addComponents(bot),
     new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('setup:home').setLabel('العودة إلى الإعداد').setStyle(ButtonStyle.Secondary))] };
@@ -406,7 +406,7 @@ const modals = {
       forms.field({ id: 'pendingExpireDays', label: 'سقوط المعلّقة بعد', max: 3, value: String(lp.pendingExpireDays ?? 0),
         description: 'بالأيام: تُلغى الطلبات المعلّقة تلقائياً بعدها. من 1 إلى 365.' }),
     ],
-    note: 'تُقبل الأرقام العربية (٣٠)، والقيم خارج الحدود تُرفض مع زر تصحيح دون فقدان ما كتبته.',
+    note: 'تُقبل الأرقام العربية أيضاً، والقيم خارج الحدود تُرفض مع زر تصحيح دون فقدان ما كتبته.',
   }),
   resignPolicy: ({ policy: rp = {} } = {}) => ({
     id: 'setup:policies-resign-modal',

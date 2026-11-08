@@ -65,7 +65,7 @@ function actionTypePicker() {
         '**ما بعد الاختيار:** بطاقة تأكيد تعرض كل شيء قبل الحفظ، ويمكنك التعديل أو الإلغاء.',
       ].join('\n'),
       color: COLORS.info,
-      footer: kit.footerLine('🛡️ الخطوة ١ من ٢ — اختيار النوع'),
+      footer: kit.footerLine('🛡️ الخطوة 1 من 2 — اختيار النوع'),
     })],
     components: [new ActionRowBuilder().addComponents(menu)],
     ephemeral: true,

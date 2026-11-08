@@ -134,7 +134,7 @@ module.exports = {
       const s = staffService.get(i.user.id);
       // حارس هوية المُقدِّم (البند ⑩): فرع تجاوز Server Manager في التفاعلات
       // يمنح i.staffLevel = GM دون صف إداري، وبوابة promo:modal في السجل
-      // دنيا (STAFF) فقط فتُمرَِّر له. الجلسة تُحي بعد ١٥ دقيقة، فمن فتح
+      // دنيا (STAFF) فقط فتُمرَِّر له. الجلسة تُحي بعد 15 دقيقة، فمن فتح
       // /request-promotion وله رتبة ثم أُزيلت رتبه وحاز Server Manager قبيل
       // الإرسال يمرّ هنا بلا مصفوفة — وevaluate(null) كان ينهار على
       // nextPromotion (staff.team). القاعدة: لا صف دفتر ⇒ لا طلب ترقية،
@@ -156,7 +156,7 @@ module.exports = {
       // الكود (الخروج وسائل هويةٌ وثيقة لا حذف)، لكن البطاقة في قناة
       // المراجعة تنجو من كل شيء، وكان nextPromotion(null) ينهار على
       // staff.team. الطلب الذي غاب أهلهُ يُعامَل كتغيّر الرتبة: توقفٌ
-      // صريح لا سقوط صامت، والسقوط المجدول (٣٠ يوماً) سيطويه بأسببه.
+      // صريح لا سقوط صامت، والسقوط المجدول (30 يوماً) سيطويه بأسببه.
       if (!s) return replyEphemeral(i, '❌ صاحب هذا الطلب ليس في سجل الإداريين — الترقية لا تُنفَّذ بلا صف أهلية.', COLORS.danger);
       const rule = promotionRules.ruleFor(s.team, s.rank);
       if (!rule || rule.to !== r.to_rank) return replyEphemeral(i, '❌ رتبة العضو تغيرت منذ الطلب.', COLORS.danger);

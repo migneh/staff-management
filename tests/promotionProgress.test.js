@@ -54,10 +54,10 @@ describe('عتبة النقاط في /promotion-progress', () => {
     assert.ok(pointsField, 'حقل نقاط الترقية موجود');
     assert.match(pointsField.value, /عتبة انتقالية/, 'الحالة الانتقالية معلنة صريحة كما في البوابة و/my-points');
     assert.match(pointsField.value, /الكاملة/, 'العتبة الكاملة القادمة معلنة بعدَ إقفال النافذة');
-    assert.match(pointsField.value, /٦٦/, 'عتبة اليوم الفهنية 66 (max(⌊200·10/60⌋=33، ثلث العتبة=66)) بأرقام عربية');
-    assert.match(pointsField.value, /بعد ٥٠ يوم/, 'عدد الأيام المتبقٍية من النافذة (60-10)');
-    assert.match(pointsField.value, /٢٠٠/, 'العتبة الكاملة (200) ظاهرة كمرجع لا كحاجز');
-    assert.match(pointsField.value, /٧٠/, 'رصيد العضو بأرقام عربية');
+    assert.match(pointsField.value, /66/, 'عتبة اليوم الفهنية 66 (max(⌊200·10/60⌋=33، ثلث العتبة=66)) بأرقام غربية');
+    assert.match(pointsField.value, /بعد 50 يوم/, 'عدد الأيام المتبقٍية من النافذة (60-10)');
+    assert.match(pointsField.value, /200/, 'العتبة الكاملة (200) ظاهرة كمرجع لا كحاجز');
+    assert.match(pointsField.value, /70/, 'رصيد العضو بأرقام غربية');
   });
 
   test('بلا نافذة انتقالية: العتبة الكاملة كما هي — علامة انتقالية لا تُختلق', async () => {
@@ -69,7 +69,7 @@ describe('عتبة النقاط في /promotion-progress', () => {
     const pointsField = card.fields.find(f => f.name.includes('نقاط الترقية'));
     assert.ok(pointsField);
     assert.doesNotMatch(pointsField.value, /عتبة انتقالية/, 'لا وسم انتقالة حين غابت الانطلاقة');
-    assert.match(pointsField.value, /٢٠٠/, 'العتبة الخام في صورتها الكاملة');
-    assert.match(pointsField.value, /٧٠/);
+    assert.match(pointsField.value, /200/, 'العتبة الخام في صورتها الكاملة');
+    assert.match(pointsField.value, /70/);
   });
 });

@@ -153,7 +153,7 @@ function sumInWindow(userId, days = 28) {
 }
 
 function ticketPointsAwarded(userId, start, endExclusive) {
-  // الأقواس حرفيّة بعدد TICKET_REASON_KEYS (٣) حتى يفحص حارس المخطط الجملة
+  // الأقواس حرفيّة بعدد TICKET_REASON_KEYS (3) حتى يفحص حارس المخطط الجملة
   // ساكنةً بلا ثقب غير قابل للحسم. إن نما القائمة دون تحديث الجملة، يرمي
   // ربط المعاملات فوراً على أول استدعاء — غلطة صاخبة لا انحراف صامت.
   const row = getDb().prepare(`SELECT COALESCE(SUM(points), 0) total FROM promotion_points
