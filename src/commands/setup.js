@@ -344,7 +344,7 @@ async function saveRulesetFields(i, team, fromRank, ids) {
   for (const id of ids) {
     const raw = forms.value(i, id);
     if (!String(raw || '').trim()) continue; // فراغ = إبقاء القيمة
-    const n = Number(normalizeDigits(String(raw)).replace(/٫/g, '.').trim());
+    const n = Number(normalizeDigits(String(raw)).replace(/[٫،]/g, '.').trim());
     const bound = rules.BOUNDS[id];
     const label = PROMO_FIELD_LABELS[id];
     if (!Number.isFinite(n)) { errors.push(`«${label}»: القيمة ليست رقماً`); continue; }
@@ -429,7 +429,9 @@ const modals = {
       title: '🪜 القاعدة المشتركة للترقية',
       fields: PROMO_COMMON_IDS.map(id => forms.field({
         id, label: PROMO_FIELD_LABELS[id], required: false,
-        max: id === 'pointsThreshold' ? 5 : 3, value: r[id] == null ? '' : String(r[id]),
+        // max=6: قص 100000 إلى 10000 (ضمن الحدود) بصمت يُوهم بالحفظ الصحيح —
+        // بستة محارف تصل خارج الحدود إلى حارس BOUNDS فيُرفض رسالة واضحة.
+        max: id === 'pointsThreshold' ? 6 : 3, value: r[id] == null ? '' : String(r[id]),
         description: `${rules.BOUNDS[id].min}-${rules.BOUNDS[id].max}: ${PROMO_FIELD_HINTS[id]} فارغ = إبقاء القيمة.`,
       })),
     };
@@ -568,10 +570,10 @@ module.exports = {
     },
     'setup:policies-leave-modal': async (i) => {
       const vals = {
-        maxConcurrent: Number(i.fields.getTextInputValue('maxConcurrent')),
-        maxDays: Number(i.fields.getTextInputValue('maxDays')),
-        maxDaysPer90: Number(i.fields.getTextInputValue('maxDaysPer90')),
-        pendingExpireDays: Number(i.fields.getTextInputValue('pendingExpireDays')),
+        maxConcurrent: Number(normalizeDigits(i.fields.getTextInputValue('maxConcurrent')).trim()),
+        maxDays: Number(normalizeDigits(i.fields.getTextInputValue('maxDays')).trim()),
+        maxDaysPer90: Number(normalizeDigits(i.fields.getTextInputValue('maxDaysPer90')).trim()),
+        pendingExpireDays: Number(normalizeDigits(i.fields.getTextInputValue('pendingExpireDays')).trim()),
       };
       if (Object.values(vals).some(v => !Number.isInteger(v) || v < 1 || v > 365)) return replyEphemeral(i, '❌ القيم يجب أن تكون أرقاماً صحيحة بين 1 و 365.', COLORS.danger);
       for (const [k, v] of Object.entries(vals)) settings.setPolicy(k === 'maxConcurrent' ? 'leaveMaxConcurrent' : k === 'maxDays' ? 'leaveMaxDays' : k === 'maxDaysPer90' ? 'leaveMaxDaysPer90' : 'leavePendingExpireDays', v);
@@ -582,8 +584,8 @@ module.exports = {
       return forms.open(i, modals.resignPolicy({ policy: settings.resignationPolicy() }));
     },
     'setup:policies-resign-modal': async (i) => {
-      const noticeDays = Number(i.fields.getTextInputValue('noticeDays'));
-      const escalateDays = Number(i.fields.getTextInputValue('escalateDays'));
+      const noticeDays = Number(normalizeDigits(i.fields.getTextInputValue('noticeDays')).trim());
+      const escalateDays = Number(normalizeDigits(i.fields.getTextInputValue('escalateDays')).trim());
       if (!Number.isInteger(noticeDays) || noticeDays < 1 || noticeDays > 30) return replyEphemeral(i, '❌ فترة الإشعار يجب أن تكون بين 1 و30 يوماً.', COLORS.danger);
       if (!Number.isInteger(escalateDays) || escalateDays < 1 || escalateDays > 14) return replyEphemeral(i, '❌ تصعيد المعلّقة يجب أن يكون بين 1 و14 يوماً.', COLORS.danger);
       settings.setPolicy('resignationNoticeDays', noticeDays);

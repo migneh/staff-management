@@ -387,6 +387,25 @@ test('قواعد الإجازات المتقدمة تُحفظ من /setup وتظ
 });
 
 // ===== سباق مراجعة الإجازات — الكتابة الثانية لا تنفَّذ (تقرير التدقيق) =====
+test('سياسات الإجازات والاستقالة تقبل الأرقام العربية كما يوعد التلميح (انحدار عن normalizeDigits)', async () => {
+  const i = interaction({ level: LEVELS.BOSS, admin: true, texts: { maxConcurrent: '٣', maxDays: '٣٠', maxDaysPer90: '٤٥', pendingExpireDays: '١٤' } });
+  await resolveComponent('setup:policies-leave-modal').handler(i, []);
+  const lp = settings.leavePolicy();
+  assert.equal(lp.maxConcurrent, 3, '٣ تُسوّى إلى 3 لا NaN');
+  assert.equal(lp.maxDays, 30);
+  assert.equal(lp.maxDaysPer90, 45);
+  assert.equal(lp.pendingExpireDays, 14);
+  const r = interaction({ level: LEVELS.BOSS, admin: true, texts: { noticeDays: '٧', escalateDays: '٣' } });
+  await resolveComponent('setup:policies-resign-modal').handler(r, []);
+  const rp = settings.resignationPolicy();
+  assert.equal(rp.noticeDays, 7);
+  assert.equal(rp.pendingEscalateDays, 3, 'escalateDays يُخزَّن كسِياسة resignationEscalateDays ويُقرأ pendingEscalateDays');
+  // الحدود كما كانت: خارج المدى يُرفض ولا يُغيَّر شيء
+  const bad = interaction({ level: LEVELS.BOSS, admin: true, texts: { maxConcurrent: '999', maxDays: '30', maxDaysPer90: '45', pendingExpireDays: '14' } });
+  await resolveComponent('setup:policies-leave-modal').handler(bad, []);
+  assert.match(json(bad.payload).embeds[0].description, /صحيح/);
+  assert.equal(settings.leavePolicy().maxConcurrent, 3);
+});
 // الأكثر دقة في السباقين الصغيرين أن نوضّح: نفس الطلب تضغط عليه نقرتان متلاصقتان
 // على بطاقة أو لوحة في خيطين. المحاكاة هنا حتمية: نحرّك الصف داخل
 // deferUpdate/deferReply الخاص بالمراجع الخاسر (أي بين قراءته وكتابته)، ثم
