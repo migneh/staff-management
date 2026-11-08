@@ -1,6 +1,7 @@
 'use strict';
 const { SlashCommandBuilder } = require('discord.js');
 const { LEVELS } = require('../constants');
+const config = require('../config');
 const backup = require('../services/backup');
 const retention = require('../services/retention');
 const audit = require('../services/audit');
@@ -43,9 +44,15 @@ module.exports = {
         const check = backup.verify(newest.path);
         const label = backup.checkLabel(check);
         const rows = files.slice(0, 10).map(f => `• \`${f.name}\` — ${sizeMb(f.size)} • ${kit.tsRelative(f.modifiedAt)}`);
+        // خطوات الاسترجاع تستهدف المسار الذي يفتحه البوت فعلاً، لا مساراً مثالياً:
+        // كان النصّ يثبّت `data/staff.db` بينما systemd وCompose يشغّلان البوت على
+        // قاعدة أخرى (DB_PATH) — فالنسخ مكان ذلك الملف كان يسترجع ملفاً لا يفتحه
+        // البوت أبداً. المصدر الآن config.dbPath، وهو نفس القيمة التي يقرأها
+        // src/database.js — فالنصّ والقاعدة لا يختلفان أبداً.
+        const dbPath = config.dbPath;
         return i.editReply({
           embeds: [embed(`🗄️ النسخ الاحتياطية (${files.length})`,
-            `${rows.join('\n')}${files.length > 10 ? `\n… و${files.length - 10} نسخة أخرى` : ''}\n${divider}\n**فحص أحدث نسخة:** ${label.emoji} ${check.detail}\n\n**خطوات الاسترجاع:** أوقف البوت ← احتفظ بـ \`data/staff.db\` جانباً ← انسخ النسخة مكانه ← \`PRAGMA integrity_check\` ← ثم شغّل البوت وتحقّق بـ \`/system-status\``,
+            `${rows.join('\n')}${files.length > 10 ? `\n… و${files.length - 10} نسخة أخرى` : ''}\n${divider}\n**فحص أحدث نسخة:** ${label.emoji} ${check.detail}\n\n**خطوات الاسترجاع:** أوقف البوت ← احتفظ بـ \`${dbPath}\` جانباً ← انسخ النسخة مكانه ← \`PRAGMA integrity_check\` ← ثم شغّل البوت وتحقّق بـ \`/system-status\``,
             COLORS[label.color] || COLORS.info).setFooter({ text: `آخر فحص: ${clock.nowIso()} بتوقيت UTC` })],
         });
       },
