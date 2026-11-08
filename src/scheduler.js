@@ -149,10 +149,27 @@ async function processLeaves(client) {
       if (!db.prepare("SELECT 1 FROM leave_requests WHERE id = ? AND status = 'pending'").get(r.id)) continue;
       // المطالبة ذرّية: تذكير واحد فقط للإجابة، مهما تكرّر تشغيل المهمة.
       if (!leaveService.claimReminder(r.id, 'escalate')) continue;
+      // السجل يقول ما حدث فعلاً، لا ما نريد أن يحدث. كان `leave_escalated`
+      // يُكتب بلا النظر في نتيجة الإرسال — فسطر واحد في سجل العمليات يقول
+      // «صُعّد الطلب» حتى حين تكون قناة leave-requests محذوفة أو معطّلة، فلا
+      // يعرف المراجع أن الطلب ينتظر قراراً لم يُعلن عنه أحد. الآن:
+      // نجح الإرسال → leave_escalated، وفشل → leave_escalation_failed.
+      // سياسة إعادة المحاولة (claimReminder) لم تتغيّر: الفشل يُسجَّل ولا
+      // يُعاد الإرسال — تغيير ذلك خارج نطاق هذا الإصلاح.
+      let delivered = false;
       try {
-        await sendToChannel(client, 'leave-requests', { embeds: [embed('⏰ طلب بانتظار القرار', `${LEAVE_TYPES[r.leave_type] ? LEAVE_TYPES[r.leave_type] + ' — ' : ''}<@${r.user_id}>\nالطلب **#${r.id}** معلّق منذ **${hours}** ساعة (${r.start_date} → ${r.end_date}).\nيرجى البت فيه، أو استخدم «تعديل مقترح» لتواريخ بديلة.`, COLORS.warning)], components: [leaveReviewRow(r.id)] });
+        // عقد sendToChannel: يُعيد null عند الفشل (قناة غير مربوطة، أو خطأ
+        // في الإرسال) — لا يُعيد null أبداً حين يصل الطلب. لذلك الفحص بـ
+        // `!== null` هو الفحص الدقيق: قيمة غير null تعني أن الطلب وصل.
+        const sent = await sendToChannel(client, 'leave-requests', { embeds: [embed('⏰ طلب بانتظار القرار', `${LEAVE_TYPES[r.leave_type] ? LEAVE_TYPES[r.leave_type] + ' — ' : ''}<@${r.user_id}>\nالطلب **#${r.id}** معلّق منذ **${hours}** ساعة (${r.start_date} → ${r.end_date}).\nيرجى البت فيه، أو استخدم «تعديل مقترح» لتواريخ بديلة.`, COLORS.warning)], components: [leaveReviewRow(r.id)] });
+        delivered = sent !== null;
       } catch (e) { logger.warn(`تعذّر إرسال تصعيد الطلب ${r.id}: ${e.message}`); }
-      audit.record({ action: 'leave_escalated', targetId: r.user_id, details: { requestId: r.id, hours } });
+      if (delivered) {
+        audit.record({ action: 'leave_escalated', targetId: r.user_id, details: { requestId: r.id, hours } });
+      } else {
+        audit.record({ action: 'leave_escalation_failed', targetId: r.user_id, details: { requestId: r.id, hours, reason: 'تعذّر الإرسال إلى قناة leave-requests' } });
+        logger.warn(`تعذّر تصعيد الطلب ${r.id}: لم يُرسَل التنبيه إلى قناة leave-requests.`);
+      }
     }
   }
 
